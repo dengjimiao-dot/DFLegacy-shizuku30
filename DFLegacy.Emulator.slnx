@@ -1,0 +1,12 @@
+<Solution>
+  <Project Path="src/DFLegacy.Ijl15/DFLegacy.Ijl15.vcxproj" Id="b5e9130b-04a6-46a2-8a4e-fe5b77f307be">
+    <Platform Project="Win32" />
+  </Project>
+  <Project Path="src/DFLegacy.RandomNative/DFLegacy.RandomNative.vcxproj" Id="414afaaa-2b3d-4d08-959c-10c4208e65b0">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="src/DFLegacy.Launcher/DFLegacy.Launcher.csproj" />
+  <Project Path="src/DFLegacy.Protocol/DFLegacy.Protocol.csproj" />
+  <Project Path="src/DFLegacy.Server/DFLegacy.Server.csproj" />
+  <Project Path="tests/DFLegacy.SmokeTests/DFLegacy.SmokeTests.csproj" />
+</Solution>
