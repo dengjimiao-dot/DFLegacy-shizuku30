@@ -42,10 +42,15 @@ public sealed class ExperienceOptions
 {
     public double MonsterMultiplier { get; set; } = 1;
     public double ClearMultiplier { get; set; } = 1;
+    public double BlackDiamondClearBonusRate { get; set; } = 0.05;
+    public double ClearEventBonusRate { get; set; }
+    public DateTimeOffset? ClearEventStartsAt { get; set; }
+    public DateTimeOffset? ClearEventEndsAt { get; set; }
 }
 
 public sealed class ChannelOptions
 {
+    public int ServerNumber { get; set; } = 1;
     public string Name { get; set; } = "Local Channel";
     public string Host { get; set; } = "127.0.0.1";
     public int Port { get; set; } = 7001;

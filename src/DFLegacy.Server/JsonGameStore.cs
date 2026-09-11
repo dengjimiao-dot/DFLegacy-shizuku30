@@ -261,7 +261,9 @@ public sealed record CharacterRecord(
     int PvpLosses = 0,
     int PvpPlayCount = 0,
     int PvpCount = 0,
-    byte PvpGradeExtension = 0)
+    byte PvpGradeExtension = 0,
+    Guid? MentorCharacterId = null,
+    byte MentorExperienceBonusPercent = 0)
 {
     [JsonIgnore]
     public bool IsWeakened => WeaknessRecovery < DungeonWeaknessPolicy.FullStamina;

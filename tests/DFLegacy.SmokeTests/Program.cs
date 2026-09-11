@@ -18,6 +18,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
 EquipmentReinforcementSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
 WorldMapSmokeTests.Run(Check);
+DungeonClearExperienceSmokeTests.Run(Check);
 ItemSealingSmokeTests.Run(Check);
 await CompoundItemSmokeTests.RunAsync(Check);
 await EquipmentQualitySmokeTests.RunAsync(Check);
@@ -7081,9 +7082,9 @@ var clearExperienceBreakdown = new GameDungeonClearExperienceBreakdown
     PartyBonus = 300,
     AvatarBonus = 40,
     EventBonus = 50,
-    PcRoomBonus = 60,
-    MaterialBonus = 70,
-    MemberBonus = 80,
+    BlackDiamondBonus = 60,
+    ChannelBonus = 70,
+    MentorBonus = 80,
     CreatureBonus = 90
 };
 var clearExperiencePacket = GameProtocolEngine.CreateClearDungeonReward(

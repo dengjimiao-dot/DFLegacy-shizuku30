@@ -13,3 +13,4 @@ tools/pydeps/
 *.user
 *.log
 /docs
+AGENTS.md

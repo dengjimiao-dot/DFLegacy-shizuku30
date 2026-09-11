@@ -106,11 +106,11 @@ public sealed record GameDungeonClearExperienceBreakdown
 
     public uint EventBonus { get; init; }
 
-    public uint PcRoomBonus { get; init; }
+    public uint BlackDiamondBonus { get; init; }
 
-    public uint MaterialBonus { get; init; }
+    public uint ChannelBonus { get; init; }
 
-    public uint MemberBonus { get; init; }
+    public uint MentorBonus { get; init; }
 
     public uint CreatureBonus { get; init; }
 
@@ -121,9 +121,9 @@ public sealed record GameDungeonClearExperienceBreakdown
         + PartyBonus
         + AvatarBonus
         + EventBonus
-        + PcRoomBonus
-        + MaterialBonus
-        + MemberBonus
+        + BlackDiamondBonus
+        + ChannelBonus
+        + MentorBonus
         + CreatureBonus);
 }
 
@@ -2733,9 +2733,11 @@ public static class GameProtocolEngine
         writer.Write(experience.PartyBonus);
         writer.Write(experience.AvatarBonus);
         writer.Write(experience.EventBonus);
-        writer.Write(experience.PcRoomBonus);
-        writer.Write(experience.MaterialBonus);
-        writer.Write(experience.MemberBonus);
+        // DF2008 setters: +0x130 black diamond, +0x134 matching channel,
+        // +0x120 mentor. These are not the newer server's PC-room/material fields.
+        writer.Write(experience.BlackDiamondBonus);
+        writer.Write(experience.ChannelBonus);
+        writer.Write(experience.MentorBonus);
         writer.Write(experience.CreatureBonus);
 
         // No immediate inventory rewards are attached to this notification.

@@ -33,6 +33,11 @@ public sealed class DungeonExperienceCatalog
     private readonly ExperienceRateState _rates;
     private readonly double _operatorMonsterMultiplier;
     private readonly double _operatorClearMultiplier;
+    private readonly double _blackDiamondClearBonusRate;
+    private readonly double _eventBonusRate;
+    private readonly DateTimeOffset? _eventStartsAt;
+    private readonly DateTimeOffset? _eventEndsAt;
+    private readonly IReadOnlyDictionary<ushort, double> _channelBonusRates;
 
     public DungeonExperienceCatalog(
         ServerOptions options,
@@ -46,6 +51,11 @@ public sealed class DungeonExperienceCatalog
         _operatorClearMultiplier = NormalizeRate(
             options.Experience?.ClearMultiplier ?? 1.0,
             1.0);
+        _blackDiamondClearBonusRate = NormalizeRate(options.Experience?.BlackDiamondClearBonusRate ?? 0.05, 0);
+        _eventBonusRate = NormalizeRate(options.Experience?.ClearEventBonusRate ?? 0, 0);
+        _eventStartsAt = options.Experience?.ClearEventStartsAt;
+        _eventEndsAt = options.Experience?.ClearEventEndsAt;
+        _channelBonusRates = LoadChannelBonusRates(scripts, options.Channel.ServerNumber, options.Channel.ChannelNumber);
 
         logger.LogInformation(
             "Loaded dungeon EXP rates from {Source}: monster={MonsterRate}, clear={ClearRate}, party=[{PartyRates}], difficulty=[{DifficultyRates}], rank=[{RankRates}], kind=[{KindRates}], operatorMonster={OperatorMonster}, operatorClear={OperatorClear}.",
@@ -58,6 +68,10 @@ public sealed class DungeonExperienceCatalog
             string.Join(',', _rates.MonsterKindRates),
             _operatorMonsterMultiplier,
             _operatorClearMultiplier);
+        logger.LogInformation(
+            "Clear EXP bonus policy: blackDiamond={BlackDiamondRate}, event={EventRate}, eventStart={EventStart}, eventEnd={EventEnd}, server={ServerNumber}, channel={ChannelNumber}, matchingDungeons={DungeonCount}.",
+            _blackDiamondClearBonusRate, _eventBonusRate, _eventStartsAt, _eventEndsAt,
+            options.Channel.ServerNumber, options.Channel.ChannelNumber, _channelBonusRates.Count);
     }
 
     public int MonsterBaseRewardCount => MonsterBaseRewards.Length;
@@ -65,6 +79,12 @@ public sealed class DungeonExperienceCatalog
     public double MonsterBonusRate => _rates.MonsterBonusRate;
 
     public double ClearBonusRate => _rates.ClearBonusRate;
+
+    public double GetChannelBonusRate(ushort dungeonId) => _channelBonusRates.GetValueOrDefault(dungeonId);
+
+    public double GetEventBonusRate(DateTimeOffset now) =>
+        (!_eventStartsAt.HasValue || now >= _eventStartsAt.Value)
+        && (!_eventEndsAt.HasValue || now < _eventEndsAt.Value) ? _eventBonusRate : 0;
 
     public uint GetMonsterBaseReward(int monsterLevel) =>
         monsterLevel >= 1 && monsterLevel <= MonsterBaseRewards.Length
@@ -137,7 +157,8 @@ public sealed class DungeonExperienceCatalog
         byte difficulty,
         byte resultCode,
         int totalKilledMonsterCount,
-        int partyMemberCount = 1)
+        int partyMemberCount = 1,
+        DungeonClearBonusContext? bonuses = null)
     {
         if (characterLevel >= CharacterExperienceCatalog.MaximumLevel
             || totalKilledMonsterCount <= 0)
@@ -173,12 +194,87 @@ public sealed class DungeonExperienceCatalog
             ToUInt32(withParty * GetRankRate(resultCode)),
             uint.MaxValue - withParty);
 
+        bonuses ??= new DungeonClearBonusContext();
+        var remaining = uint.MaxValue - withParty - rankBonus;
+        // Each component uses the same base, never the preceding bonus total.
+        // Cap components themselves so the client sum equals the persisted grant.
+        uint Bonus(double rate, bool minimumOne = false)
+        {
+            rate = NormalizeRate(rate, 0);
+            var value = ToUInt32(withParty * rate);
+            if (minimumOne && rate > 0 && withParty > 0)
+            {
+                value = Math.Max(1u, value);
+            }
+
+            value = Math.Min(value, remaining);
+            remaining -= value;
+            return value;
+        }
+
         return new GameDungeonClearExperienceBreakdown
         {
             BaseExperience = baseExperience,
             RankBonus = rankBonus,
-            PartyBonus = partyBonus
+            PartyBonus = partyBonus,
+            AvatarBonus = Bonus(bonuses.HasAvatar ? memberCount == 1 ? 0.02 : 0.05 : 0, true),
+            CreatureBonus = Bonus(bonuses.HasCreature ? memberCount == 1 ? 0.02 : 0.05 : 0, true),
+            MentorBonus = Bonus(bonuses.MentorBonusRate),
+            EventBonus = Bonus(bonuses.EventBonusRate),
+            BlackDiamondBonus = Bonus(bonuses.HasBlackDiamond ? _blackDiamondClearBonusRate : 0),
+            ChannelBonus = Bonus(bonuses.ChannelBonusRate)
         };
+    }
+
+    private static IReadOnlyDictionary<ushort, double> LoadChannelBonusRates(
+        ScriptFileSystem scripts, int serverNumber, int channelNumber)
+    {
+        const string path = "etc/channel_info.etc";
+        var result = new Dictionary<ushort, double>();
+        if (!scripts.FileExists(path))
+        {
+            return result;
+        }
+
+        var text = Regex.Replace(scripts.ReadAllText(path, ScriptEncoding), @"//[^\r\n]*", "");
+        var groups = new Dictionary<string, ushort[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match block in Regex.Matches(text, @"(?ims)^\s*\[dungeon\](.*?)^\s*\[/dungeon\]"))
+        {
+            var body = block.Groups[1].Value;
+            var category = Regex.Match(body, @"`\[([^\]]+)\]`");
+            if (category.Success)
+            {
+                groups[category.Groups[1].Value] = Regex.Matches(body, @"(?m)^\s*(\d+)\s*$")
+                    .Select(match => ushort.TryParse(match.Groups[1].Value, out var id) ? id : (ushort)0)
+                    .Where(id => id != 0).ToArray();
+            }
+        }
+
+        foreach (Match block in Regex.Matches(text, @"(?ims)^\s*\[server\](.*?)^\s*\[/server\]"))
+        {
+            var body = block.Groups[1].Value;
+            var server = Regex.Match(body, @"^\s*(\d+)");
+            if (!server.Success || !int.TryParse(server.Groups[1].Value, out var id) || id != serverNumber)
+            {
+                continue;
+            }
+
+            foreach (Match row in Regex.Matches(body,
+                @"(?m)^\s*(\d+)\s+(?:<[^>]+>|`[^`]*`)\s+\d+\s+`\[([^\]]+)\]`\s+(\d+)"))
+            {
+                if (int.TryParse(row.Groups[1].Value, out var channel) && channel == channelNumber
+                    && double.TryParse(row.Groups[3].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var percent)
+                    && groups.TryGetValue(row.Groups[2].Value, out var dungeons))
+                {
+                    foreach (var dungeonId in dungeons)
+                    {
+                        result[dungeonId] = percent / 100.0;
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     public static double GetLevelPenalty(int characterLevel, int contentLevel)

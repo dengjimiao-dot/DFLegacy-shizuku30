@@ -11685,7 +11685,19 @@ public sealed class EntranceService(
                                                 dungeonNormalMonsterKills
                                                 + dungeonChampionMonsterKills
                                                 + dungeonBossMonsterKills,
-                                                partyMemberCount: 1)
+                                                partyMemberCount: 1,
+                                                bonuses: new DungeonClearBonusContext(
+                                                    HasAvatar: avatarInventory.Values.Any(item =>
+                                                        itemCatalog.TryGetDefinition(item.ItemId, out var avatar)
+                                                        && CharacterAvatarInventoryLayout.IsCompatibleWornSlot(avatar, item.Slot)),
+                                                    HasCreature: creatureInventory.TryGetValue(
+                                                        CharacterCreatureInventoryLayout.EquippedCreatureSlot,
+                                                        out var clearCreature) && clearCreature.CountOrValue != 0,
+                                                    HasBlackDiamond: HasActivePremiumService(GameProtocolEngine.BlackDiamondServiceType),
+                                                    MentorBonusRate: DungeonClearBonusContext.GetMentorBonusRate(
+                                                        activeCharacter, characterSessions.IsOnline),
+                                                    EventBonusRate: dungeonExperienceCatalog.GetEventBonusRate(DateTimeOffset.UtcNow),
+                                                    ChannelBonusRate: dungeonExperienceCatalog.GetChannelBonusRate(currentDungeonId)))
                                             : GameDungeonClearExperienceBreakdown.Empty;
 
                                     if (activeCharacter is not null
@@ -11870,7 +11882,7 @@ public sealed class EntranceService(
                                 }
 
                                 logger.LogInformation(
-                                    "Dungeon {DungeonId} settlement sent for user {UserId}, result {ResultValue}, resultCode={ResultCode}, goldCost={GoldCost}, monsterExp={MonsterExperience}, clearExp={ClearExperience}, base={BaseExperience}, rank={RankBonus}, party={PartyBonus}",
+                                    "Dungeon {DungeonId} settlement sent for user {UserId}, result {ResultValue}, resultCode={ResultCode}, goldCost={GoldCost}, monsterExp={MonsterExperience}, clearExp={ClearExperience}, base={BaseExperience}, rank={RankBonus}, party={PartyBonus}, mentor={MentorBonus}, avatar={AvatarBonus}, creature={CreatureBonus}, event={EventBonus}, blackDiamond={BlackDiamondBonus}, channel={ChannelBonus}",
                                     currentDungeonId,
                                     localUserId,
                                     clientResultValue,
@@ -11880,7 +11892,13 @@ public sealed class EntranceService(
                                     settledClearExperience.TotalExperience,
                                     settledClearExperience.BaseExperience,
                                     settledClearExperience.RankBonus,
-                                    settledClearExperience.PartyBonus);
+                                    settledClearExperience.PartyBonus,
+                                    settledClearExperience.MentorBonus,
+                                    settledClearExperience.AvatarBonus,
+                                    settledClearExperience.CreatureBonus,
+                                    settledClearExperience.EventBonus,
+                                    settledClearExperience.BlackDiamondBonus,
+                                    settledClearExperience.ChannelBonus);
                             }
                             continue;
                         }
