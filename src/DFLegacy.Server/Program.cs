@@ -51,6 +51,7 @@ builder.Services.AddSingleton<DisjointCatalog>();
 builder.Services.AddSingleton<CeraShopCatalog>();
 builder.Services.AddSingleton<PremiumBenefitCatalog>();
 builder.Services.AddSingleton<DungeonCatalog>();
+builder.Services.AddSingleton<WorldMapCatalog>();
 builder.Services.AddSingleton<WorldDropCatalog>();
 builder.Services.AddSingleton<GoldDropCatalog>();
 builder.Services.AddSingleton<MonsterDropCatalog>();

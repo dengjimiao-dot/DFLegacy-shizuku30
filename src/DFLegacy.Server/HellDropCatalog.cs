@@ -14,6 +14,7 @@ public sealed class HellDropCatalog
 {
     private const string ScriptPath = "etc/itemdropinfo_monster_hell.etc";
     private readonly MonsterDropCatalog _monsterDrops;
+    private readonly ILogger<HellDropCatalog> _logger;
     private readonly Lazy<CatalogState> _state;
 
     public HellDropCatalog(
@@ -22,6 +23,7 @@ public sealed class HellDropCatalog
         ILogger<HellDropCatalog> logger)
     {
         _monsterDrops = monsterDrops;
+        _logger = logger;
         _state = new Lazy<CatalogState>(
             () => Load(scripts, logger),
             LazyThreadSafetyMode.ExecutionAndPublication);
@@ -63,9 +65,8 @@ public sealed class HellDropCatalog
 
     public byte RollRarity(byte dungeonDifficulty, IDropRandomSource random)
     {
-        var thresholds = dungeonDifficulty == 0
-            ? _state.Value.RarityThresholds
-            : BuildRarityThresholds(dungeonDifficulty);
+        // DF2008 has one PVF rarity table, not a separate table per difficulty.
+        var thresholds = _state.Value.RarityThresholds;
         var roll = random.Next(10_000) + 1;
         for (var rarity = thresholds.Length - 1; rarity >= 0; rarity--)
         {
@@ -83,18 +84,39 @@ public sealed class HellDropCatalog
         byte dungeonDifficulty,
         byte hellPartyMode,
         IDropRandomSource random,
-        out ushort itemId)
+        out ushort itemId,
+        double rateMultiplier = 1,
+        bool forceDrop = false)
     {
         itemId = 0;
-        if (_state.Value.ProbabilityBands.Length == 0)
+        if (hellPartyMode is not (1 or 2)
+            || !double.IsFinite(rateMultiplier) || rateMultiplier < 0)
         {
             return false;
         }
 
         var level = (byte)Math.Clamp((int)dungeonLevel, 1, 200);
+        if (!TryGetProbabilityBand(level, out _))
+        {
+            _logger.LogWarning("Hell drop has no probability band for level {Level}.", level);
+            return false;
+        }
+
+        var column = ResolveDifficultyColumn(dungeonDifficulty, hellPartyMode);
+        var weight = GetDifficultyProbability(level, dungeonDifficulty, hellPartyMode);
+        var threshold = Math.Floor(weight * rateMultiplier);
+        // 13339 generateSpecificItem (0x085357AA..0x085357D3) compares
+        // inclusive CMTRand [0,1000] <= adjusted PVF weight. Not a 1/10000 gate.
+        var gateRoll = random.Next(1_001);
+        var hit = forceDrop || (rateMultiplier > 0 && weight >= 0 && gateRoll <= threshold);
+        _logger.LogInformation(
+            "Hell drop gate: level={Level}, difficulty={Difficulty}, mode={Mode}, column={Column}, weight={Weight}, multiplier={Multiplier}, roll={Roll}, hit={Hit}, forced={Forced}.",
+            level, dungeonDifficulty, hellPartyMode, column, weight, rateMultiplier, gateRoll, hit, forceDrop);
         var range = _state.Value.LevelRanges.GetValueOrDefault(level)
             ?? new HellDropLevelRange(level, 3, 3);
-        var rarity = RollRarity(dungeonDifficulty, random);
+        // DFLegacy's local economy guarantees one product per cosmofiend.
+        // A missed dedicated roll selects common equipment instead of nothing.
+        var rarity = hit ? RollRarity(dungeonDifficulty, random) : (byte)0;
         if (_monsterDrops.TryChooseItem(
                 MonsterDropKind.Equipment,
                 level,
@@ -104,10 +126,11 @@ public sealed class HellDropCatalog
                 random,
                 out itemId))
         {
+            _logger.LogInformation("Hell equipment selected: level={Level}, rarity={Rarity}, item={ItemId}.", level, rarity, itemId);
             return true;
         }
 
-        return rarity != 0
+        var fallback = rarity != 0
             && _monsterDrops.TryChooseItem(
                 MonsterDropKind.Equipment,
                 level,
@@ -116,6 +139,10 @@ public sealed class HellDropCatalog
                 range.PlusLevel,
                 random,
                 out itemId);
+        _logger.LogInformation(
+            "Hell equipment pool miss: level={Level}, rarity={Rarity}, commonFallback={Fallback}, item={ItemId}.",
+            level, rarity, fallback, itemId);
+        return fallback;
     }
 
     public static int ResolveDifficultyColumn(

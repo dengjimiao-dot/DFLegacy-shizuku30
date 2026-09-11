@@ -17,6 +17,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
 
 EquipmentReinforcementSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
+WorldMapSmokeTests.Run(Check);
 ItemSealingSmokeTests.Run(Check);
 await CompoundItemSmokeTests.RunAsync(Check);
 await EquipmentQualitySmokeTests.RunAsync(Check);
@@ -5752,10 +5753,10 @@ Check(GameDatagramProtocol.TryReadBlock(setHpFrame, out var parsedSetHpFrame, ou
         && parsedSetHpFrame.SenderPartyIndex == 0
         && parsedSetHpFrame.Application.SequenceEqual(setHpApplication),
     "MTUPD type 2 frame round-trips the DFLegacy sequence/length/sender header");
-var enterSelectDungeon = GameProtocolEngine.CreateEnterSelectDungeon();
+var enterSelectDungeon = GameProtocolEngine.CreateEnterSelectDungeon(true, []);
 Check(enterSelectDungeon.ProtocolId == GameProtocolEngine.EnterSelectDungeonNotification
     && enterSelectDungeon.Payload.SequenceEqual(new byte[] { 1, 0 }),
-    "dungeon-gate entry uses the exact DFLegacy mode/blocked-member layout");
+    "dungeon-gate entry uses the exact DFLegacy quest/item-party-slot layout");
 var dungeonInfo = GameProtocolEngine.CreateDungeonInfo(1, 0, 0, 2, 1);
 Check(dungeonInfo.ProtocolId == GameProtocolEngine.DungeonInfoNotification
     && dungeonInfo.Payload.SequenceEqual(new byte[] { 1, 0, 0, 0, 2, 1, 0, 0 }),
@@ -9135,8 +9136,8 @@ Check(generatedClearReward.FreeGoldAmount == 388,
                 new SequenceDropRandomSource(9_698)) == 3
             && pvfHellDrops.RollRarity(
                 3,
-                new SequenceDropRandomSource(9_699)) == 4,
-        "hell equipment rarity uses the DF60A1 difficulty-adjusted 1-to-10000 boundaries");
+                new SequenceDropRandomSource(9_699)) == 3,
+        "hell equipment rarity respects the PVF table at every dungeon difficulty");
     Check(pvfHellDrops.TryRollEquipment(
                 dungeonLevel: 55,
                 dungeonDifficulty: 0,
@@ -9147,7 +9148,21 @@ Check(generatedClearReward.FreeGoldAmount == 388,
             && hellEquipment.InventoryCategory == ItemInventoryCategory.Equipment
             && hellEquipment.Grade is >= 49 and <= 55
             && hellEquipment.Rarity == 0,
-        "a defeated cosmofiend guarantees one weighted equipment roll with common-rarity fallback support");
+        "a cosmofiend passing the probability gate rolls weighted equipment with common-rarity fallback support");
+    Check(pvfHellDrops.TryRollEquipment(55, 0, 1,
+                new SequenceDropRandomSource(751, 0), out var missedHellItem)
+            && pvfItemCatalog.TryGetDefinition(missedHellItem, out var guaranteedHellItem)
+            && guaranteedHellItem.Rarity == 0
+            && pvfHellDrops.TryRollEquipment(55, 0, 2,
+                new SequenceDropRandomSource(501, 0), out _)
+            && !pvfHellDrops.TryRollEquipment(55, 0, 0,
+                new SequenceDropRandomSource(), out _),
+        "hell probability misses guarantee common equipment without a rarity roll; ordinary mode cannot roll hell equipment");
+    Check(pvfHellDrops.TryRollEquipment(55, 0, 1,
+                new SequenceDropRandomSource(750, 0, 0), out _)
+            && pvfHellDrops.TryRollEquipment(55, 0, 2,
+                new SequenceDropRandomSource(500, 0, 0), out _),
+        "hell probability boundaries are inclusive and party mode affects the selected PVF column");
     var hasWorldDropLevel1 = pvfWorldDrops.TryGetLevel(1, out var worldDropLevel1);
     var hasWorldDropLevel55 = pvfWorldDrops.TryGetLevel(55, out var worldDropLevel55);
     Check(hasWorldDropLevel1

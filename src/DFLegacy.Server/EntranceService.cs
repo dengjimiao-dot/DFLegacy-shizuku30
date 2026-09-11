@@ -30,6 +30,7 @@ public sealed class EntranceService(
     CeraShopCatalog ceraShopCatalog,
     PremiumBenefitCatalog premiumBenefitCatalog,
     DungeonCatalog dungeonCatalog,
+    WorldMapCatalog worldMapCatalog,
     DungeonDropGenerator dropGenerator,
     MonsterChampionDropCatalog monsterChampionDrops,
     HellDropCatalog hellDropCatalog,
@@ -257,6 +258,8 @@ public sealed class EntranceService(
             byte currentAreaId = 1;
             ushort currentDungeonId = 0;
             var inDungeonSelection = false;
+            WorldMapDefinition? selectionWorldMap = null;
+            DateTimeOffset? dungeonSelectionDeadline = null;
             byte currentDungeonRoomX = 0;
             byte currentDungeonRoomY = 0;
             byte currentDungeonDifficulty = 0;
@@ -1749,6 +1752,21 @@ public sealed class EntranceService(
                     }
                 }
 
+                async Task SendDungeonSelectionEligibilityAsync()
+                {
+                    var questsMet = selectionWorldMap?.MeetsHellQuests(completedQuestIds) == true;
+                    var missingItems = selectionWorldMap is { HasHellDungeon: true }
+                        && !selectionWorldMap.HasHellItems(mainInventory.Values);
+                    var packet = GameProtocolEngine.CreateEnterSelectDungeon(
+                        questsMet, missingItems ? [(ushort)0] : []);
+                    await packet.WriteAsync(stream, serverToken);
+                    Interlocked.Increment(ref runtimeSession.SentPackets);
+                    LogPacket("TX", runtimeSession, packet);
+                    logger.LogInformation(
+                        "World map {WorldMapId} eligibility for {CharacterId}: hellQuests={QuestsMet}, missingHellItems={MissingItems}.",
+                        selectionWorldMap?.Id, activeCharacter?.Id, questsMet, missingItems);
+                }
+
                 async Task ReturnToTownFromDungeonAsync(
                     string reason,
                     bool forcedDungeonExit = false)
@@ -1847,6 +1865,8 @@ public sealed class EntranceService(
                     currentDungeonLayout = null;
                     currentDungeonRoom = null;
                     inDungeonSelection = false;
+                    dungeonSelectionDeadline = null;
+                    selectionWorldMap = null;
                     aliveDungeonMonsters.Clear();
                     reportedBossDeaths.Clear();
                     bossCascadeMonsterDeaths.Clear();
@@ -2215,7 +2235,36 @@ public sealed class EntranceService(
                             stream,
                             options.MaximumPacketLength,
                             serverToken).AsTask();
-                        if (isChannelPort && dungeonDeathTimeout is { } deathTimeout)
+                        if (isChannelPort && inDungeonSelection
+                            && dungeonSelectionDeadline is { } selectionDeadline)
+                        {
+                            var remaining = selectionDeadline - DateTimeOffset.UtcNow;
+                            if (remaining > TimeSpan.Zero)
+                            {
+                                var completed = await Task.WhenAny(
+                                    pendingPacketRead, Task.Delay(remaining, serverToken));
+                                if (completed == pendingPacketRead)
+                                {
+                                    request = await pendingPacketRead;
+                                    pendingPacketRead = null;
+                                    if (request is null)
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (request is null)
+                            {
+                                // DF2008's CMD 16 failure handler (0x410B05) retries
+                                // after 30.3 s, but returns without unlocking controls
+                                // when selected index +0x200 is zero (0x410B1C).
+                                // Never rely solely on the client's CMD 142 to exit.
+                                await ReturnToTownFromDungeonAsync("selection-countdown-expired");
+                                continue;
+                            }
+                        }
+                        else if (isChannelPort && dungeonDeathTimeout is { } deathTimeout)
                         {
                             var remaining = deathTimeout.Deadline - DateTimeOffset.UtcNow;
                             if (remaining > TimeSpan.Zero)
@@ -9992,6 +10041,12 @@ public sealed class EntranceService(
                             dungeonReturnY = currentY;
                             dungeonReturnDirection = currentDirection;
                             inDungeonSelection = true;
+                            selectionWorldMap = worldMapCatalog.TryGetForGate(
+                                currentTownId, currentAreaId, out var gateWorldMap)
+                                ? gateWorldMap : null;
+                            // Return before DF2008 auto-selects at 30.3 seconds.
+                            dungeonSelectionDeadline = requiresTutorial
+                                ? null : DateTimeOffset.UtcNow.AddSeconds(30);
                             await SaveCurrentLocationAsync(serverToken);
                             var dungeonState = GameProtocolEngine.CreateUserState(
                                 localUserId,
@@ -10019,10 +10074,7 @@ public sealed class EntranceService(
 
                             await SendDungeonPermissionsAsync();
 
-                            var enterSelect = GameProtocolEngine.CreateEnterSelectDungeon();
-                            await enterSelect.WriteAsync(stream, serverToken);
-                            Interlocked.Increment(ref runtimeSession.SentPackets);
-                            LogPacket("TX", runtimeSession, enterSelect);
+                            await SendDungeonSelectionEligibilityAsync();
                             continue;
                         }
 
@@ -10060,6 +10112,36 @@ public sealed class EntranceService(
                                 : (byte)0;
 
                             var requiresTutorial = activeCharacter is { TutorialStarted: false };
+                            if (!requiresTutorial && inDungeonSelection
+                                && dungeonSelectionDeadline is { } entryDeadline
+                                && DateTimeOffset.UtcNow >= entryDeadline)
+                            {
+                                // A ready packet may win Task.WhenAny at the deadline.
+                                // Check again before layout generation or ticket/fatigue consumption.
+                                await ReturnToTownFromDungeonAsync("selection-countdown-expired");
+                                continue;
+                            }
+
+                            if (!requiresTutorial && !inDungeonSelection)
+                            {
+                                logger.LogWarning("Ignored stale dungeon selection for {CharacterId}.", activeCharacter?.Id);
+                                continue;
+                            }
+
+                            if (!requiresTutorial && dungeonOption != 0
+                                && (selectionWorldMap is null
+                                    || !selectionWorldMap.DungeonIds.Contains(dungeonId)
+                                    || !selectionWorldMap.MeetsHellQuests(completedQuestIds)
+                                    || !selectionWorldMap.HasHellItems(mainInventory.Values)
+                                    || !dungeonCatalog.IsHellDungeon(dungeonId)))
+                            {
+                                var rejected = GameProtocolEngine.CreateCommandError(request, errorCode: 14);
+                                await rejected.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, rejected);
+                                await SendDungeonSelectionEligibilityAsync();
+                                continue;
+                            }
                             if (requiresTutorial
                                 && dungeonId != GameProtocolEngine.TutorialDungeonId)
                             {
@@ -10235,21 +10317,18 @@ public sealed class EntranceService(
                             GameServerPacket? pendingHellTicketUpdate = null;
                             if (dungeonRun.HellMode)
                             {
-                                consumedHellTicket = mainInventory.Values
-                                    .Where(item =>
-                                        dungeon.HellTicketItemIds.Contains(item.ItemId)
-                                        && item.CountOrValue > 0)
-                                    .OrderBy(item => item.Slot)
-                                    .FirstOrDefault();
-                                if (consumedHellTicket is null)
+                                var plannedInventory = mainInventory.ToDictionary();
+                                if (selectionWorldMap is null
+                                    || !selectionWorldMap.TryConsumeHellItems(mainInventory, out plannedInventory))
                                 {
                                     dungeonRun.Stop();
                                     var ticketError = GameProtocolEngine.CreateCommandError(
                                         request,
-                                        errorCode: 4);
+                                        errorCode: 14);
                                     await ticketError.WriteAsync(stream, serverToken);
                                     Interlocked.Increment(ref runtimeSession.SentPackets);
                                     LogPacket("TX", runtimeSession, ticketError);
+                                    await SendDungeonSelectionEligibilityAsync();
                                     logger.LogInformation(
                                         "Rejected hell entry for dungeon {DungeonId}: no matching ticket ({TicketIds}).",
                                         dungeonId,
@@ -10257,20 +10336,11 @@ public sealed class EntranceService(
                                     continue;
                                 }
 
-                                var plannedInventory = mainInventory.ToDictionary();
-                                var remainingTicketCount = consumedHellTicket.CountOrValue - 1;
-                                if (remainingTicketCount == 0)
-                                {
-                                    plannedInventory.Remove(consumedHellTicket.Slot);
-                                }
-                                else
-                                {
-                                    plannedInventory[consumedHellTicket.Slot] =
-                                        consumedHellTicket with
-                                        {
-                                            CountOrValue = remainingTicketCount
-                                        };
-                                }
+                                var changedTickets = mainInventory.Values
+                                    .Where(item => !plannedInventory.TryGetValue(item.Slot, out var remaining)
+                                        || remaining.CountOrValue != item.CountOrValue)
+                                    .OrderBy(item => item.Slot).ToArray();
+                                consumedHellTicket = changedTickets.FirstOrDefault();
 
                                 var savedTicketConsumption =
                                     await store.SaveCharacterInventoryAsync(
@@ -10296,13 +10366,9 @@ public sealed class EntranceService(
                                 mainInventory = plannedInventory;
                                 pendingHellTicketUpdate = GameProtocolEngine.CreateUpdateItemList(
                                     0,
-                                    [remainingTicketCount == 0
-                                        ? new GameInventoryEntry(
-                                            consumedHellTicket.Slot,
-                                            ushort.MaxValue,
-                                            0)
-                                        : ToGameInventoryEntry(
-                                            plannedInventory[consumedHellTicket.Slot])]);
+                                    changedTickets.Select(item => plannedInventory.TryGetValue(item.Slot, out var remaining)
+                                        ? ToGameInventoryEntry(remaining)
+                                        : new GameInventoryEntry(item.Slot, ushort.MaxValue, 0)).ToArray());
                             }
 
                             inDungeonSelection = false;
@@ -10976,33 +11042,43 @@ public sealed class EntranceService(
                                             groundItem.OwnerUserId));
                                     }
 
-                                    if (wasHellFiend
-                                        && dropGenerator.Enabled
-                                        && hellDropCatalog.TryRollEquipment(
-                                            defeatedMonster.Level,
+                                    if (wasHellFiend && dropGenerator.Enabled)
+                                    {
+                                        var hellLevel = dungeonCatalog.TryGetDefinition(currentDungeonId, out var hellDefinition)
+                                            ? hellDefinition.BasisLevel : defeatedMonster.Level;
+                                        var hellHit = hellDropCatalog.TryRollEquipment(
+                                            hellLevel,
                                             currentDungeonDifficulty,
                                             hellPartyMode,
                                             GameRandomSource.Shared,
-                                            out var hellItemId))
-                                    {
-                                        var hellGroundItem = groundDungeonItems.Add(
-                                            new DungeonGeneratedDrop(
-                                                IsGold: false,
-                                                hellItemId,
-                                                CountOrValue: 1),
-                                            localUserId,
-                                            monsterUniqueId,
-                                            currentDungeonRoomX,
-                                            currentDungeonRoomY,
-                                            x: unchecked((short)defeatedMonster.X),
-                                            y: unchecked((short)defeatedMonster.Y),
-                                            catalog: itemCatalog);
-                                        protocolDrops.Add(new GameDungeonDrop(
-                                            hellGroundItem.GroundId,
-                                            hellGroundItem.ItemId,
-                                            hellGroundItem.GetClientAddInfo(itemCatalog),
-                                            hellGroundItem.GetClientDurability(itemCatalog),
-                                            hellGroundItem.OwnerUserId));
+                                            out var hellItemId,
+                                            options.Drop.RatePercent / 100.0 * options.Drop.EconomicRate,
+                                            options.Drop.ForceDrops);
+                                        logger.LogInformation(
+                                            "Hell drop result for character {CharacterId}, dungeon {DungeonId}, monster {MonsterIndex}/{UniqueId}: hit={Hit}, item={ItemId}.",
+                                            activeCharacter?.Id, currentDungeonId, defeatedMonster.MonsterIndex,
+                                            monsterUniqueId, hellHit, hellItemId);
+                                        if (hellHit)
+                                        {
+                                            var hellGroundItem = groundDungeonItems.Add(
+                                                new DungeonGeneratedDrop(
+                                                    IsGold: false,
+                                                    hellItemId,
+                                                    CountOrValue: 1),
+                                                localUserId,
+                                                monsterUniqueId,
+                                                currentDungeonRoomX,
+                                                currentDungeonRoomY,
+                                                x: unchecked((short)defeatedMonster.X),
+                                                y: unchecked((short)defeatedMonster.Y),
+                                                catalog: itemCatalog);
+                                            protocolDrops.Add(new GameDungeonDrop(
+                                                hellGroundItem.GroundId,
+                                                hellGroundItem.ItemId,
+                                                hellGroundItem.GetClientAddInfo(itemCatalog),
+                                                hellGroundItem.GetClientDurability(itemCatalog),
+                                                hellGroundItem.OwnerUserId));
+                                        }
                                     }
                                 }
 

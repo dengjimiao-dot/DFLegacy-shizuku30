@@ -2270,10 +2270,30 @@ public static class GameProtocolEngine
             [partyIndex]);
     }
 
-    public static GameServerPacket CreateEnterSelectDungeon() =>
-        // The DFLegacy handler reads one entry-mode flag followed by a u8-counted
-        // list of blocked party-member ids. A local solo session has none.
-        new(NotificationPacketType, EnterSelectDungeonNotification, [1, 0]);
+    public static GameServerPacket CreateEnterSelectDungeon(
+        bool hellQuestsCompleted,
+        IReadOnlyList<ushort> missingHellItemPartyIndices)
+    {
+        // DF2008 0x41F1CF reads quest eligibility (0 triggers string 5431).
+        // 0x41F27A reads the count; 0x41F2BE reads u16 PARTY SLOTS for string
+        // 5430, not user IDs. Do not use the newer server's NOTI 27 layout.
+        if (missingHellItemPartyIndices.Count > 4
+            || missingHellItemPartyIndices.Any(index => index >= 4))
+        {
+            throw new ArgumentOutOfRangeException(nameof(missingHellItemPartyIndices));
+        }
+
+        using var payload = new MemoryStream();
+        using var writer = new BinaryWriter(payload);
+        writer.Write(hellQuestsCompleted);
+        writer.Write((byte)missingHellItemPartyIndices.Count);
+        foreach (var index in missingHellItemPartyIndices)
+        {
+            writer.Write(index);
+        }
+
+        return new(NotificationPacketType, EnterSelectDungeonNotification, payload.ToArray());
+    }
 
     public static GameServerPacket CreateTutorialDungeonInfo(byte difficulty) =>
         CreateDungeonInfo(
