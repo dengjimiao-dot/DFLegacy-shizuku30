@@ -3269,9 +3269,8 @@ public sealed class EntranceService(
                                         state.ServiceType,
                                         state.RemainingSeconds))
                                     .ToArray(),
-                                // Preserve completed quests in the store, but do not put their
-                                // legacy IDs on the wire until DFLegacy's grouped bitmaps are mapped.
-                                completedQuestIds: []);
+                                completedQuestIds: completedQuestIds.Order().ToArray(),
+                                questCompletionMapping: questCatalog.CompletionMapping);
                             await selectReply.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, selectReply);
@@ -3971,13 +3970,18 @@ public sealed class EntranceService(
                             var plannedQuests = currentQuests
                                 .Append(acceptedQuest)
                                 .ToList();
+                            var questDungeonUnlocks = HiddenDungeonUnlockCatalog.ResolveQuestDungeonUnlockIds(
+                                questId, definition, dungeonCatalog);
+                            var unlockedHiddenDungeon = questDungeonUnlocks.Any(dungeonId =>
+                                !(activeCharacter.UnlockedDungeonIds ?? []).Contains(dungeonId));
                             var savedQuestProgress = await store.SaveCharacterQuestProgressAsync(
                                 accountName,
                                 activeCharacter.Id,
                                 acceptancePlan.Inventory.Values,
                                 plannedQuests,
                                 plannedCompletedQuestIds,
-                                serverToken);
+                                serverToken,
+                                unlockedDungeonIds: questDungeonUnlocks);
                             if (savedQuestProgress is null)
                             {
                                 var error = GameProtocolEngine.CreateCommandError(request, 18);
@@ -3998,38 +4002,6 @@ public sealed class EntranceService(
                             completedQuestIds.Clear();
                             completedQuestIds.UnionWith(
                                 savedQuestProgress.CompletedQuestIds ?? []);
-
-                            var questDungeonUnlocks =
-                                HiddenDungeonUnlockCatalog.ResolveQuestDungeonUnlockIds(
-                                    questId,
-                                    definition,
-                                    dungeonCatalog);
-                            var newDungeonUnlocks = questDungeonUnlocks
-                                .Where(dungeonId => !(activeCharacter.UnlockedDungeonIds ?? [])
-                                    .Contains(dungeonId))
-                                .ToArray();
-                            var unlockedHiddenDungeon = newDungeonUnlocks.Length > 0;
-                            if (unlockedHiddenDungeon)
-                            {
-                                var unlockedDungeonIds = (activeCharacter.UnlockedDungeonIds ?? [])
-                                    .Concat(newDungeonUnlocks)
-                                    .Distinct()
-                                    .OrderBy(dungeonId => dungeonId)
-                                    .ToArray();
-                                var savedUnlocks = await store.SaveCharacterDungeonUnlocksAsync(
-                                    accountName,
-                                    activeCharacter.Id,
-                                    unlockedDungeonIds,
-                                    serverToken);
-                                if (savedUnlocks is not null)
-                                {
-                                    activeCharacter = savedUnlocks;
-                                }
-                                else
-                                {
-                                    unlockedHiddenDungeon = false;
-                                }
-                            }
 
                             var acceptQuestReply = GameProtocolEngine.CreateAcceptQuestReply(
                                 questId,
@@ -4549,7 +4521,9 @@ public sealed class EntranceService(
                                 awakeningType: growthAdvanced ? nextAwakeningType : null,
                                 victoryPoints: nextVictoryPoints,
                                 warehouseCapacity: rewardPlan.WarehouseCapacity,
-                                expectedWarehouseCapacity: warehouseCapacity);
+                                expectedWarehouseCapacity: warehouseCapacity,
+                                unlockedDungeonIds: HiddenDungeonUnlockCatalog.ResolveQuestDungeonUnlockIds(
+                                    questId, questDefinition, dungeonCatalog));
                             if (completedCharacter is null)
                             {
                                 var error = GameProtocolEngine.CreateCommandError(request, 22);
@@ -6591,15 +6565,10 @@ public sealed class EntranceService(
                                         CharacterItemSealing.UnsealWhenEquipped(
                                             itemToUnequip,
                                             itemCatalog);
-                                    mainInventory[sourceSlot] = unsealedItem with
-                                    {
-                                        Slot = sourceSlot,
-                                        // State=1 is accepted in the worn-item
-                                        // snapshot but crashes this client when
-                                        // the same record is incrementally
-                                        // constructed in the main bag.
-                                        State = 0
-                                    };
+                                    mainInventory[sourceSlot] = CharacterItemIdentity.MoveToSlot(
+                                        unsealedItem,
+                                        sourceSlot,
+                                        itemCatalog);
                                     activeCharacter = await store.SaveCharacterInventoryAsync(
                                         accountName,
                                         activeCharacter.Id,
@@ -7010,22 +6979,16 @@ public sealed class EntranceService(
                             else
                             {
                                 sourceSpace.Remove(sourceSlot);
-                                destinationSpace[destinationSlot] = sourceItem with
-                                {
-                                    Slot = destinationSlot
-                                };
+                                destinationSpace[destinationSlot] = CharacterItemIdentity.MoveToSlot(
+                                    sourceItem, destinationSlot, itemCatalog);
 
                                 if (displacedItem is not null)
                                 {
                                     destinationSpace.Remove(destinationSlot);
-                                    destinationSpace[destinationSlot] = sourceItem with
-                                    {
-                                        Slot = destinationSlot
-                                    };
-                                    sourceSpace[sourceSlot] = displacedItem with
-                                    {
-                                        Slot = sourceSlot
-                                    };
+                                    destinationSpace[destinationSlot] = CharacterItemIdentity.MoveToSlot(
+                                        sourceItem, destinationSlot, itemCatalog);
+                                    sourceSpace[sourceSlot] = CharacterItemIdentity.MoveToSlot(
+                                        displacedItem, sourceSlot, itemCatalog);
                                 }
                             }
 

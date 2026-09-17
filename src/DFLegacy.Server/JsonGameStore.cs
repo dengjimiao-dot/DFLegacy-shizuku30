@@ -213,6 +213,8 @@ public sealed record CharacterRecord(
     List<CharacterItemRecord>? Inventory = null,
     List<CharacterItemRecord>? Equipment = null,
     List<CharacterSkillRecord>? Skills = null,
+    // Per-character JSON quest progress: active triggers and completed history.
+    // Completing a quest removes it from Quests, not from CompletedQuestIds.
     List<CharacterQuestRecord>? Quests = null,
     List<ushort>? CompletedQuestIds = null,
     uint Experience = 0,
@@ -4262,7 +4264,8 @@ public sealed class JsonGameStore(
         IEnumerable<ushort> completedQuestIds,
         CancellationToken cancellationToken = default,
         ushort? warehouseCapacity = null,
-        ushort? expectedWarehouseCapacity = null)
+        ushort? expectedWarehouseCapacity = null,
+        IEnumerable<ushort>? unlockedDungeonIds = null)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -4304,6 +4307,10 @@ public sealed class JsonGameStore(
                     .OrderBy(questId => questId)
                     .ToList()
             };
+            if (unlockedDungeonIds is not null)
+            {
+                updated = HiddenDungeonUnlockCatalog.ApplyUnlocks(updated, unlockedDungeonIds);
+            }
             updated = SettleWarehouseUpgradeItems(updated);
             account.Characters[index] = updated;
             await SaveLockedAsync(cancellationToken);
@@ -4922,7 +4929,8 @@ public sealed class JsonGameStore(
         uint? victoryPoints = null,
         ushort? warehouseCapacity = null,
         ushort? expectedWarehouseCapacity = null,
-        int? growType = null)
+        int? growType = null,
+        IEnumerable<ushort>? unlockedDungeonIds = null)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -5006,6 +5014,10 @@ public sealed class JsonGameStore(
                     .ToList(),
                 Mailbox = mailbox
             };
+            if (unlockedDungeonIds is not null)
+            {
+                updated = HiddenDungeonUnlockCatalog.ApplyUnlocks(updated, unlockedDungeonIds);
+            }
             updated = SettleWarehouseUpgradeItems(updated);
             account.Characters[index] = updated;
             await SaveLockedAsync(cancellationToken);

@@ -2,6 +2,20 @@ namespace DFLegacy.Server;
 
 public static class HiddenDungeonUnlockCatalog
 {
+    public static CharacterRecord ApplyUnlocks(
+        CharacterRecord character,
+        IEnumerable<ushort> dungeonIds)
+    {
+        var unlocked = (character.UnlockedDungeonIds ?? [])
+            .Concat(dungeonIds).Where(id => id != 0).Distinct().Order().ToList();
+        return character with
+        {
+            UnlockedDungeonIds = unlocked,
+            DungeonProgress = DungeonDifficultyProgression.Normalize(
+                (character.DungeonProgress ?? []).Concat(unlocked.Select(id =>
+                    new CharacterDungeonProgressRecord(id, 0)))).ToList()
+        };
+    }
     private static readonly IReadOnlyDictionary<ushort, ushort> DungeonByQuest =
         new Dictionary<ushort, ushort>
         {
@@ -61,6 +75,7 @@ public static class HiddenDungeonUnlockCatalog
             {
                 if (row.Length > 0
                     && row[0] is > 0 and <= ushort.MaxValue
+                    && !HiddenDungeonIds.Contains((ushort)row[0])
                     && dungeons.TryGetDefinition(checked((ushort)row[0]), out _))
                 {
                     result.Add(checked((ushort)row[0]));
@@ -69,6 +84,7 @@ public static class HiddenDungeonUnlockCatalog
 
             if (definition.AppearMap.Length > 0
                 && definition.AppearMap[0] is > 0 and <= ushort.MaxValue
+                && !HiddenDungeonIds.Contains((ushort)definition.AppearMap[0])
                 && dungeons.TryGetDefinition(
                     checked((ushort)definition.AppearMap[0]),
                     out _))

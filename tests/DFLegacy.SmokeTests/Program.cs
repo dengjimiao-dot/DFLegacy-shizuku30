@@ -16,6 +16,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
     new(scripts, NullLogger<ItemCatalog>.Instance);
 
 EquipmentReinforcementSmokeTests.Run(Check);
+await HiddenDungeonQuestSmokeTests.RunAsync(Check);
 AvatarCompoundSmokeTests.Run(Check);
 WorldMapSmokeTests.Run(Check);
 DungeonClearExperienceSmokeTests.Run(Check);
@@ -831,7 +832,7 @@ catch (NotSupportedException)
     completedQuestLayoutRejected = true;
 }
 Check(completedQuestLayoutRejected,
-    "select-character reply rejects legacy completed-quest ids until DFLegacy bitmap groups are mapped");
+    "select-character reply refuses to guess bitmap positions without a PVF quest mapping");
 
 var currentCharacterInfo = GameProtocolEngine.CreateCurrentCharacterInfo(
     new GameCharacterSummary(1, "123"u8.ToArray(), 0, 0, 1),
@@ -8744,6 +8745,10 @@ Check(generatedClearReward.FreeGoldAmount == 388,
     var pvfQuestCatalog = new QuestCatalog(
         pvfScripts,
         NullLogger<QuestCatalog>.Instance);
+    Check(pvfQuestCatalog.CompletionMapping.ContainsKey(116)
+            && pvfQuestCatalog.CompletionMapping.Values.All(index =>
+                index >= 0 && index / 512 <= 8 && index % 512 < 256),
+        "real PVF maps the hidden-dungeon quest into a valid DF2008 completion bitmap");
     Check(new ushort[] { 1, 2, 10 }.All(id => pvfQuestCatalog.TryGetDefinition(id, out _)),
         "DFLegacy quest definitions are parsed directly from Script.pvf");
     Check(pvfQuestCatalog.TryGetDefinition(
@@ -8931,6 +8936,9 @@ Check(generatedClearReward.FreeGoldAmount == 388,
                     pvfDungeonCatalog)
                 .SequenceEqual(new ushort[] { 9 }),
         "hidden-dungeon migration resolves both the explicit quest map and parsed quest condition rows");
+    Check(!HiddenDungeonUnlockCatalog.ResolveQuestDungeonUnlockIds(
+                9999, hiddenLorienQuest, pvfDungeonCatalog).Contains((ushort)9),
+        "a quest merely referencing a hidden dungeon does not replace its unlock quest");
     var realClassChangeRewards = new (ushort QuestId, byte GrowType)[]
     {
         (803, 2), (806, 1), (809, 3), (812, 1), (816, 2), (819, 3),

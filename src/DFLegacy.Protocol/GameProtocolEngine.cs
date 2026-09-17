@@ -1121,7 +1121,8 @@ public static class GameProtocolEngine
         uint completedTutorialFlags = DefaultCompletedTutorialFlags,
         IReadOnlyList<GameQuestEntry>? activeQuests = null,
         IReadOnlyList<ushort>? completedQuestIds = null,
-        IReadOnlyList<GamePremiumServiceEntry>? premiumServices = null)
+        IReadOnlyList<GamePremiumServiceEntry>? premiumServices = null,
+        IReadOnlyDictionary<ushort, int>? questCompletionMapping = null)
     {
         if (request.Type != CommandPacketType
             || request.ProtocolId != SelectCharacterCommand
@@ -1167,10 +1168,10 @@ public static class GameProtocolEngine
             throw new ArgumentOutOfRangeException(nameof(completedQuestIds));
         }
 
-        if (completedQuestIds.Count != 0)
+        if (completedQuestIds.Count != 0 && questCompletionMapping is null)
         {
             throw new NotSupportedException(
-                "DFLegacy completed quests require grouped 256-bit quest bitmaps.");
+                "DFLegacy completed quests require the PVF quest completion mapping.");
         }
 
         // DFLegacy consumes exactly three (u16 quest id, u32 trigger) slots.
@@ -1189,7 +1190,38 @@ public static class GameProtocolEngine
             }
         }
 
-        writer.Write((byte)0);       // completed-quest bitmap group count
+        // DF2008 0x40FFF2: u8 group, u32 byte length, 32 bytes of bits.
+        // 0x4EEB60 maps each bit through questmappingtable.tbl, not quest ID.
+        var completedGroups = new SortedDictionary<byte, byte[]>();
+        foreach (var questId in completedQuestIds.Distinct())
+        {
+            if (!questCompletionMapping!.TryGetValue(questId, out var index))
+            {
+                continue;
+            }
+
+            var group = index / 512;
+            var bit = index % 512;
+            if (index < 0 || group > 8 || bit >= 256)
+            {
+                throw new ArgumentOutOfRangeException(nameof(questCompletionMapping));
+            }
+
+            var groupId = (byte)group;
+            if (!completedGroups.TryGetValue(groupId, out var bitmap))
+            {
+                bitmap = new byte[32];
+                completedGroups.Add(groupId, bitmap);
+            }
+            bitmap[bit / 8] |= (byte)(1 << (bit % 8));
+        }
+        writer.Write((byte)completedGroups.Count);
+        foreach (var (group, bitmap) in completedGroups)
+        {
+            writer.Write(group);
+            writer.Write((uint)bitmap.Length);
+            writer.Write(bitmap);
+        }
         writer.Write(townId);
         // DFLegacy reads this dword directly into its lower 32 tutorial flags.
         // A newly created character receives zero until the mandatory tutorial

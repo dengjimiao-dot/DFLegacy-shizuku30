@@ -10,6 +10,16 @@ public static class CharacterItemIdentity
 
     public static Guid CreateInstanceId() => Guid.CreateVersion7();
 
+    public static CharacterItemRecord MoveToSlot(
+        CharacterItemRecord item,
+        ushort slot,
+        ItemCatalog catalog)
+    {
+        // Move the UUID-owned record, not just its item ID. State includes both
+        // reinforcement and reseal count and must not be reset on unequip.
+        return Ensure(item, catalog) with { Slot = slot };
+    }
+
     public static CharacterItemRecord Ensure(
         CharacterItemRecord item,
         ItemCatalog catalog)

@@ -44,6 +44,7 @@ internal static class EquipmentReinforcementSmokeTests
                         1),
                 "reinforcement catalog reads material, gold and chance rows from upgrade.etc");
             CheckPlans(check, items, catalog);
+            CheckInstanceMoves(check, items);
         }
         finally
         {
@@ -52,6 +53,31 @@ internal static class EquipmentReinforcementSmokeTests
                 Directory.Delete(fixtureRoot, recursive: true);
             }
         }
+    }
+
+    private static void CheckInstanceMoves(Action<bool, string> check, ItemCatalog items)
+    {
+        var first = new CharacterItemRecord(9, 1_000, 1,
+            State: 0x45, Durability: 27, SealState: 0,
+            EquipmentQualitySeed: 12345, InstanceId: Guid.NewGuid());
+        var second = first with { State = 9, InstanceId = Guid.NewGuid() };
+        var bag = CharacterItemIdentity.MoveToSlot(first, 20, items);
+        var worn = CharacterItemIdentity.MoveToSlot(second, 9, items);
+        var restored = System.Text.Json.JsonSerializer.Deserialize<CharacterItemRecord[]>(
+            System.Text.Json.JsonSerializer.Serialize(new[] { bag, worn }))!;
+        var byId = restored.ToDictionary(item => item.InstanceId);
+        check(byId[first.InstanceId] == first with { Slot = 20 }
+                && byId[second.InstanceId] == second with { Slot = 9 },
+            "same-template equipment keeps UUID-owned reinforcement and metadata across moves and JSON reload");
+        var equippedAgain = CharacterItemIdentity.MoveToSlot(byId[first.InstanceId], 9, items);
+        check(equippedAgain == first
+                && (equippedAgain.State & CharacterItemSealing.ReinforcementMask) == 5
+                && CharacterItemSealing.GetResealCount(equippedAgain) == 2,
+            "unequip and re-equip preserve +5 reinforcement and two reseals on the same UUID");
+        var legacy = CharacterItemIdentity.MoveToSlot(first with { InstanceId = Guid.Empty }, 21, items);
+        check(legacy.InstanceId != Guid.Empty && legacy.State == first.State
+                && CharacterItemIdentity.MoveToSlot(legacy, 9, items).InstanceId == legacy.InstanceId,
+            "legacy equipment receives one stable UUID without losing reinforcement");
     }
 
     public static void CheckRealPvf(

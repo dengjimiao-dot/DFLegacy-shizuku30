@@ -181,6 +181,38 @@ public sealed class QuestCatalog
     private readonly ScriptFileSystem _scripts;
     private readonly ILogger<QuestCatalog> _logger;
     private readonly Lazy<IReadOnlyList<QuestDefinition>> _definitions;
+    private readonly Lazy<IReadOnlyDictionary<ushort, int>> _completionMapping;
+
+    public IReadOnlyDictionary<ushort, int> CompletionMapping => _completionMapping.Value;
+
+    private IReadOnlyDictionary<ushort, int> LoadCompletionMapping()
+    {
+        const string path = "quest/questmappingtable.tbl";
+        var result = new Dictionary<ushort, int>();
+        if (!_scripts.FileExists(path))
+        {
+            _logger.LogWarning("Quest completion mapping is missing: {Path}.", path);
+            return result;
+        }
+        var text = Regex.Replace(_scripts.ReadAllText(path, Encoding.Latin1), @"//[^\r\n]*", "");
+        var usedIndices = new HashSet<int>();
+        foreach (Match match in Regex.Matches(text, @"(?m)^\s*(\d+)\s+`[^`]*`\s+(-?\d+)"))
+        {
+            if (!ushort.TryParse(match.Groups[1].Value, out var questId)
+                || !int.TryParse(match.Groups[2].Value, out var index)
+                || index < 0 || index / 512 > 8 || index % 512 >= 256)
+            {
+                _logger.LogWarning("Unsupported DF2008 quest completion mapping row: {Row}.", match.Value);
+                continue;
+            }
+            if (result.ContainsKey(questId) || !usedIndices.Add(index))
+            {
+                throw new InvalidDataException($"Duplicate quest completion mapping: {match.Value}");
+            }
+            result.Add(questId, index);
+        }
+        return result;
+    }
     private readonly Lazy<IReadOnlyDictionary<ushort, ushort[]>>
         _implicitSequencePredecessors;
 
@@ -188,6 +220,7 @@ public sealed class QuestCatalog
     {
         _scripts = scripts;
         _logger = logger;
+        _completionMapping = new(LoadCompletionMapping, LazyThreadSafetyMode.ExecutionAndPublication);
         _definitions = new Lazy<IReadOnlyList<QuestDefinition>>(
             LoadDefinitions,
             LazyThreadSafetyMode.ExecutionAndPublication);
