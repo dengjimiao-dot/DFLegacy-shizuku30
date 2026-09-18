@@ -41,6 +41,8 @@ public sealed record QuestDefinition(
 
     public int[] AppearMap { get; init; } = [];
 
+    public int DeleteNpcIndex { get; init; } = -1;
+
     public QuestClearRewardItemDefinition[] ClearRewardItems { get; init; } = [];
 
     public QuestMonsterRewardItemDefinition[] MonsterRewardItems { get; init; } = [];
@@ -476,6 +478,7 @@ public sealed class QuestCatalog
                     SubType = ParseFirstInteger(ReadScalar(lines, "sub type"), -1),
                     PrerequisiteQuestGroups = prerequisiteGroups,
                     AppearMap = ParseIntegers(ReadScalar(lines, "appear map")),
+                    DeleteNpcIndex = ParseFirstInteger(ReadScalar(lines, "delete npc index"), -1),
                     ClearRewardItems = ParseClearRewardItems(
                         ReadIntegerRows(lines, "clear reward item")),
                     MonsterRewardItems = ParseMonsterRewardItems(

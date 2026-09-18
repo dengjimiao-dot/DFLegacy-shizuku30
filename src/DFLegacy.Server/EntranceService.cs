@@ -448,6 +448,35 @@ public sealed class EntranceService(
                     await pvpRecord.WriteAsync(stream, serverToken);
                     Interlocked.Increment(ref runtimeSession.SentPackets);
                     LogPacket("TX", runtimeSession, pvpRecord);
+
+                    var refreshedQuests = currentQuests.Select(quest =>
+                        questCatalog.TryGetDefinition(quest.QuestId, out var definition)
+                            && QuestPvpRankRequirement.IsPvpRank(definition)
+                            ? quest with { Trigger = QuestPvpRankRequirement.GetTrigger(definition, grade) }
+                            : quest).ToList();
+                    var changedQuests = refreshedQuests.Where((quest, index) =>
+                        quest.Trigger != currentQuests[index].Trigger).ToArray();
+                    if (changedQuests.Length == 0)
+                    {
+                        return;
+                    }
+
+                    var saved = await store.SaveCharacterQuestsAsync(
+                        accountName, activeCharacter.Id, refreshedQuests, completedQuestIds, serverToken);
+                    if (saved is null)
+                    {
+                        logger.LogWarning("Could not persist PvP-rank quest progress for {CharacterId}.", activeCharacter.Id);
+                        return;
+                    }
+                    currentQuests = refreshedQuests;
+                    activeCharacter = activeCharacter with { Quests = saved.Quests };
+                    foreach (var quest in changedQuests)
+                    {
+                        var update = GameProtocolEngine.CreateSetQuestTriggerReply(quest.QuestId, quest.Trigger);
+                        await update.WriteAsync(stream, serverToken);
+                        Interlocked.Increment(ref runtimeSession.SentPackets);
+                        LogPacket("TX", runtimeSession, update);
+                    }
                 }
 
                 async Task<CharacterMailRecord[]> SendMailboxStateAsync(bool notifyNewMail)
@@ -751,7 +780,7 @@ public sealed class EntranceService(
                     await enableClear.WriteAsync(stream, serverToken);
                     Interlocked.Increment(ref runtimeSession.SentPackets);
                     LogPacket("TX", runtimeSession, enableClear);
-                    await CompleteSimpleClearQuestTriggersAsync(
+                    await CompleteClearQuestTriggersAsync(
                         "empty boss-room settlement");
                     logger.LogInformation(
                         "Dungeon {DungeonId} empty boss room ({RoomX},{RoomY}) enabled settlement.",
@@ -1222,7 +1251,6 @@ public sealed class EntranceService(
                         pair => pair.Value);
                     var plannedWarehouseCapacity = warehouseCapacity;
                     var overflowMails = new List<CreateCharacterMailRequest>();
-                    var groundRewards = new List<CharacterMailAttachmentRecord>();
                     for (var index = 0; index < itemIds.Count; index++)
                     {
                         if (!itemIds[index].HasValue)
@@ -1266,21 +1294,16 @@ public sealed class EntranceService(
 
                         if (!itemCatalog.TryGetDefinition(
                                 rewardItem.ItemId,
-                                out var definition))
+                                out _))
                         {
                             continue;
                         }
 
-                        if (CharacterItemSealing.CanTrade(rewardItem, definition))
-                        {
-                            groundRewards.Add(rewardItem);
-                        }
-                        else
-                        {
-                            overflowMails.AddRange(CreateOverflowMailRequests(
-                                [rewardItem],
-                                "Dungeon clear reward"));
-                        }
+                        // Card rewards must never become ground drops. Preserve
+                        // the generated instance in the same inventory/mail transaction.
+                        overflowMails.AddRange(CreateOverflowMailRequests(
+                            [rewardItem],
+                            "Dungeon clear reward"));
 
                         granted[index] = true;
                     }
@@ -1288,8 +1311,7 @@ public sealed class EntranceService(
                     var normalizedGold = Math.Max(0, targetGold);
                     if (normalizedGold == currentGold
                         && !granted.Any(value => value)
-                        && overflowMails.Count == 0
-                        && groundRewards.Count == 0)
+                        && overflowMails.Count == 0)
                     {
                         return (true, granted);
                     }
@@ -1320,47 +1342,6 @@ public sealed class EntranceService(
                     if (warehouseCapacityChanged)
                     {
                         await SendWarehouseStateAsync();
-                    }
-
-                    foreach (var rewardItem in groundRewards)
-                    {
-                        var groundItem = groundDungeonItems.Add(
-                            new DungeonGeneratedDrop(
-                                false,
-                                rewardItem.ItemId,
-                                rewardItem.CountOrValue),
-                            localUserId,
-                            ushort.MaxValue,
-                            currentDungeonRoomX,
-                            currentDungeonRoomY,
-                            new CharacterItemRecord(
-                                ushort.MaxValue,
-                                rewardItem.ItemId,
-                                rewardItem.CountOrValue,
-                                rewardItem.State,
-                                rewardItem.Durability,
-                                rewardItem.SealState,
-                                rewardItem.AvatarRemainingSeconds,
-                                rewardItem.AvatarAbilityIndex,
-                                EquipmentQualitySeed: rewardItem.EquipmentQualitySeed,
-                                InstanceId: rewardItem.InstanceId),
-                            x: currentX,
-                            y: currentY,
-                            catalog: itemCatalog);
-                        var dropNotification = GameProtocolEngine.CreateDropItem(
-                            localUserId,
-                            currentX,
-                            currentY,
-                            new GameDungeonDrop(
-                                groundItem.GroundId,
-                                groundItem.ItemId,
-                                groundItem.GetClientAddInfo(itemCatalog),
-                                groundItem.GetClientDurability(itemCatalog),
-                                groundItem.OwnerUserId,
-                                groundItem.GetClientItemAttr(itemCatalog)));
-                        await dropNotification.WriteAsync(stream, serverToken);
-                        Interlocked.Increment(ref runtimeSession.SentPackets);
-                        LogPacket("TX", runtimeSession, dropNotification);
                     }
 
                     return (true, granted);
@@ -1483,6 +1464,16 @@ public sealed class EntranceService(
                         automaticGrant.RewardItemId);
                     return true;
                 }
+
+                uint GetAuthoritativeQuestTrigger(
+                    QuestDefinition definition,
+                    IEnumerable<CharacterItemRecord>? inventory,
+                    int gold,
+                    uint victoryPoints) => QuestPvpRankRequirement.IsPvpRank(definition)
+                        ? QuestPvpRankRequirement.GetTrigger(definition,
+                            pvpExperienceCatalog.GetGradeForPoints(activeCharacter?.PvpPoints ?? 0))
+                        : QuestItemRequirementPlanner.GetInitialTrigger(
+                            definition, inventory, gold, victoryPoints);
 
                 List<CharacterQuestRecord> RefreshSeekingQuestTriggers(
                     IEnumerable<CharacterQuestRecord> quests,
@@ -1683,7 +1674,7 @@ public sealed class EntranceService(
                         chance => GameRandomSource.Shared.Next(100) < chance),
                         $"dungeon {currentDungeonId} clear");
 
-                async Task CompleteSimpleClearQuestTriggersAsync(string source)
+                async Task CompleteClearQuestTriggersAsync(string source)
                 {
                     if (activeCharacter is null || currentDungeonId == 0)
                     {
@@ -1696,11 +1687,12 @@ public sealed class EntranceService(
                             questCatalog.TryGetDefinition(
                                 quest.QuestId,
                                 out var definition)
-                            && QuestDungeonClearRequirement.IsSimpleClear(definition)
-                            && QuestDungeonClearRequirement.Matches(
-                                definition,
-                                currentDungeonId,
-                                currentDungeonDifficulty))
+                            && ((dungeonClearEnabled
+                                    && QuestDungeonClearRequirement.IsSimpleClear(definition)
+                                    && QuestDungeonClearRequirement.Matches(
+                                        definition, currentDungeonId, currentDungeonDifficulty))
+                                || dungeonRun.HasClearedMap(
+                                    QuestMapRequirement.GetTargetMapId(definition))))
                         .Select(quest => quest.QuestId)
                         .ToHashSet();
                     if (completedSimpleClearQuestIds.Count == 0)
@@ -1722,7 +1714,7 @@ public sealed class EntranceService(
                     if (savedQuestProgress is null)
                     {
                         logger.LogWarning(
-                            "Could not persist simple-clear quest progress after {Source} in dungeon {DungeonId}.",
+                            "Could not persist clear quest progress after {Source} in dungeon {DungeonId}.",
                             source,
                             currentDungeonId);
                         return;
@@ -1744,7 +1736,7 @@ public sealed class EntranceService(
                         Interlocked.Increment(ref runtimeSession.SentPackets);
                         LogPacket("TX", runtimeSession, triggerUpdate);
                         logger.LogInformation(
-                            "Completed simple-clear quest {QuestId} after {Source} in dungeon {DungeonId} difficulty {Difficulty}.",
+                            "Completed clear quest {QuestId} after {Source} in dungeon {DungeonId} difficulty {Difficulty}.",
                             questId,
                             source,
                             currentDungeonId,
@@ -3962,7 +3954,7 @@ public sealed class EntranceService(
 
                             var acceptedQuest = new CharacterQuestRecord(
                                 questId,
-                                QuestItemRequirementPlanner.GetInitialTrigger(
+                                GetAuthoritativeQuestTrigger(
                                     definition,
                                     acceptancePlan.Inventory.Values,
                                     currentGold,
@@ -4015,6 +4007,12 @@ public sealed class EntranceService(
                             await acceptQuestReply.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, acceptQuestReply);
+                            if (definition.DeleteNpcIndex >= 0)
+                            {
+                                logger.LogInformation(
+                                    "Quest {QuestId} accepted with trigger {Trigger}; client delete-NPC index is {NpcIndex}.",
+                                    questId, acceptedQuest.Trigger, definition.DeleteNpcIndex);
+                            }
                             if (unlockedHiddenDungeon)
                             {
                                 await SendDungeonPermissionsAsync();
@@ -4125,6 +4123,15 @@ public sealed class EntranceService(
                                         currentVictoryPoints);
                                     validTrigger = true;
                                 }
+                                else if (QuestPvpRankRequirement.IsPvpRank(definition))
+                                {
+                                    // Native PvP quests send 0 when satisfied and 1
+                                    // when rank falls below the requirement. Neither
+                                    // action may override the authoritative rank.
+                                    validTrigger = triggerAction is 0 or 1;
+                                    trigger = GetAuthoritativeQuestTrigger(
+                                        definition, mainInventory.Values, currentGold, currentVictoryPoints);
+                                }
                                 else if (QuestMeetNpcRequirement.IsMeetNpc(definition))
                                 {
                                     validTrigger = QuestMeetNpcRequirement.TryApplyClientCompletion(
@@ -4132,6 +4139,11 @@ public sealed class EntranceService(
                                         oldTrigger,
                                         triggerAction,
                                         out trigger);
+                                }
+                                else if (QuestMapRequirement.IsClearMap(definition))
+                                {
+                                    validTrigger = QuestMapRequirement.TryApplyClientCompletion(
+                                        definition, triggerAction, dungeonRun, out trigger);
                                 }
                                 else if (QuestDungeonClearRequirement.IsDungeonClearCondition(
                                              definition))
@@ -4233,10 +4245,11 @@ public sealed class EntranceService(
                                 continue;
                             }
 
-                            if (QuestItemRequirementPlanner.IsSeeking(questDefinition))
+                            if (QuestItemRequirementPlanner.IsSeeking(questDefinition)
+                                || QuestPvpRankRequirement.IsPvpRank(questDefinition))
                             {
                                 var authoritativeTrigger =
-                                    QuestItemRequirementPlanner.GetInitialTrigger(
+                                    GetAuthoritativeQuestTrigger(
                                         questDefinition,
                                         mainInventory.Values,
                                         currentGold,
@@ -10261,6 +10274,19 @@ public sealed class EntranceService(
                                 continue;
                             }
 
+                            var unfinishedQuestDefinitions = currentQuests
+                                .Where(quest => quest.Trigger != 0)
+                                .Select(quest => questCatalog.TryGetDefinition(quest.QuestId, out var definition)
+                                    ? definition : null)
+                                .OfType<QuestDefinition>();
+                            if (dungeonCatalog.TryApplyQuestMap(
+                                    dungeonLayout, unfinishedQuestDefinitions, out var questMapId))
+                            {
+                                logger.LogInformation(
+                                    "Dungeon {DungeonId} selected rescue quest map {MapId} for character {CharacterId}.",
+                                    dungeonId, questMapId, activeCharacter.Id);
+                            }
+
                             if (!dungeonRun.TryStart(
                                     dungeonLayout,
                                     difficulty,
@@ -11194,17 +11220,18 @@ public sealed class EntranceService(
                                     await enableClear.WriteAsync(stream, serverToken);
                                     Interlocked.Increment(ref runtimeSession.SentPackets);
                                     LogPacket("TX", runtimeSession, enableClear);
-                                    if (!tutorialDungeonActive)
-                                    {
-                                        await CompleteSimpleClearQuestTriggersAsync(
-                                            clearDecision.Reason.ToString());
-                                    }
                                     logger.LogInformation(
                                         "Dungeon {DungeonId} boss map room ({RoomX},{RoomY}) cleared by {ClearReason}; settlement enabled",
                                         currentDungeonId,
                                         currentDungeonRoomX,
                                         currentDungeonRoomY,
                                         clearDecision.Reason);
+                                }
+
+                                if (!tutorialDungeonActive)
+                                {
+                                    await CompleteClearQuestTriggersAsync(
+                                        $"map {currentDungeonRoom!.MapId} monster death");
                                 }
                             }
                             continue;

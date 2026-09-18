@@ -115,6 +115,11 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
         return first;
     }
 
+    public bool HasClearedMap(ushort mapId) => mapId != 0
+        && _rooms.Values.Any(room => room.EncounterRoom.MapId == mapId
+            && room.EncounterRoom.Monsters.All(monster =>
+                room.DefeatedMonsterIds.Contains(monster.UniqueId)));
+
     public bool MarkPassiveObjectDestroyed(byte objectIndex)
     {
         if (_current is null

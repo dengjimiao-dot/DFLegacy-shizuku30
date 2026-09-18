@@ -17,6 +17,8 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
 
 EquipmentReinforcementSmokeTests.Run(Check);
 await HiddenDungeonQuestSmokeTests.RunAsync(Check);
+QuestMapSmokeTests.Run(Check);
+QuestPvpRankSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
 WorldMapSmokeTests.Run(Check);
 DungeonClearExperienceSmokeTests.Run(Check);
@@ -8939,6 +8941,17 @@ Check(generatedClearReward.FreeGoldAmount == 388,
     Check(!HiddenDungeonUnlockCatalog.ResolveQuestDungeonUnlockIds(
                 9999, hiddenLorienQuest, pvfDungeonCatalog).Contains((ushort)9),
         "a quest merely referencing a hidden dungeon does not replace its unlock quest");
+    Check(pvfQuestCatalog.TryGetDefinition(10, out var rescueLorianQuest)
+            && rescueLorianQuest.DeleteNpcIndex == 10
+            && rescueLorianQuest.InitialTrigger == 1
+            && QuestMapRequirement.GetTargetMapId(rescueLorianQuest) == 2224
+            && rescueLorianQuest.AppearMap.SequenceEqual(new[] { 14, -1, 2224, 100 }),
+        "current PVF Lorian rescue links NPC 10 to dungeon 14 and clear-map 2224");
+    Check(pvfQuestCatalog.TryGetDefinition(1702, out var pvpInitiationQuest)
+            && QuestPvpRankRequirement.IsPvpRank(pvpInitiationQuest)
+            && pvpInitiationQuest.ConditionRows[0].SequenceEqual(new[] { 1 })
+            && QuestPvpRankRequirement.GetTrigger(pvpInitiationQuest, 2) == 0,
+        "real PVF quest 1702 is satisfied by internal PvP grade 2 (8th)");
     var realClassChangeRewards = new (ushort QuestId, byte GrowType)[]
     {
         (803, 2), (806, 1), (809, 3), (812, 1), (816, 2), (819, 3),

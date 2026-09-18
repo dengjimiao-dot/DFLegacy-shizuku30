@@ -393,6 +393,61 @@ public sealed class DungeonCatalog
                 || MapSupportsTopology(map, topology));
     }
 
+    public bool TryApplyQuestMap(
+        DungeonLayout layout,
+        IEnumerable<QuestDefinition> unfinishedQuests,
+        out ushort questMapId,
+        IDropRandomSource? random = null)
+    {
+        questMapId = 0;
+        var state = _state.Value;
+        var bosses = layout.Maze.BossPositions;
+        var bossIndex = Array.FindIndex(bosses,
+            point => point.X == layout.BossX && point.Y == layout.BossY);
+        if (bossIndex < 0 || bosses.Length < 2)
+        {
+            return false;
+        }
+
+        // 13339 SetGridPath (0x82FFF70) uses the next boss candidate,
+        // or the previous candidate when the selected boss is last.
+        var position = bosses[bossIndex + 1 < bosses.Length ? bossIndex + 1 : bossIndex - 1];
+        if (position.X == layout.StartX && position.Y == layout.StartY
+            || position.X == layout.BossX && position.Y == layout.BossY
+            || layout.TryGetResolvedMap(position, out _))
+        {
+            return false;
+        }
+
+        random ??= GameRandomSource.Shared;
+        foreach (var quest in unfinishedQuests)
+        {
+            var appearance = quest.AppearMap;
+            // Dungeon-wide rescue-map form: dungeon, -1, map, chance (%).
+            if (appearance.Length < 4 || appearance[0] != layout.DungeonId
+                || appearance[1] != -1 || appearance[2] is <= 0 or > ushort.MaxValue
+                || appearance[3] <= 0
+                || !state.Maps.TryGetValue((ushort)appearance[2], out var map)
+                || map.MapType != DungeonMapType.Normal)
+            {
+                continue;
+            }
+
+            if (appearance[3] < 100 && random.Next(100) >= appearance[3])
+            {
+                continue;
+            }
+
+            // Rescue maps can omit [dungeon] and [greed]; never put them in
+            // the general random pool. Persist this choice for room revisits.
+            questMapId = map.MapId;
+            layout.SetResolvedMap(position, questMapId);
+            return true;
+        }
+
+        return false;
+    }
+
     public bool TryCreateRoom(
         ushort dungeonId,
         byte roomX,

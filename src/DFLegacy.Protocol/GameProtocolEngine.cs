@@ -2095,6 +2095,9 @@ public static class GameProtocolEngine
         uint trigger = 0,
         IReadOnlyList<GameQuestInsertedItem>? insertedItems = null)
     {
+        // DF2008 0x4133D1 reads quest:u16, trigger:u32, grants:u8.
+        // 0x4EC960 hides the script's [delete npc index] when trigger != 0;
+        // CMD 35 trigger 0 restores it through 0x4EBB60. No extra NPC packet.
         var inserted = insertedItems ?? [];
         using var payload = new MemoryStream();
         using var writer = new BinaryWriter(payload);
