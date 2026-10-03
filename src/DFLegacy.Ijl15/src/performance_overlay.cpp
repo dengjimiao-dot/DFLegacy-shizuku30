@@ -25,7 +25,8 @@ namespace
 
     using FpsFunction = double(__cdecl*)();
     using OriginalPerformanceFunction = int(__thiscall*)(void*);
-    using BeginTextFunction = void(__thiscall*)(void*, const void*);
+    using BeginTextFunction = dfl::performance_overlay::detail::BeginTextFunction;
+    using EndTextFunction = dfl::performance_overlay::detail::EndTextFunction;
     using DrawTextFunction = int(__thiscall*)(
         void*,
         int,
@@ -84,20 +85,6 @@ namespace
 
     int __fastcall DrawFpsAndMemory(void* performanceObject, void*) noexcept
     {
-        // The original call site checks [this + 0x2F0] before entering
-        // sub_836990. The outer gate is bypassed so IJL15 always runs, but
-        // the native renderer is still selected by its original flag here.
-        if (performanceObject != nullptr
-            && *reinterpret_cast<const std::uint8_t*>(
-                reinterpret_cast<const std::uint8_t*>(performanceObject)
-                + NativeMonitoringFlagOffset) == 1)
-        {
-            const auto originalRenderer =
-                reinterpret_cast<OriginalPerformanceFunction>(
-                    OriginalPerformanceRenderer);
-            originalRenderer(performanceObject);
-        }
-
         // The call site passes the performance object in ECX. The renderer
         // used by sub_836990 is the separate global at 0x00BF1648.
         void* const renderer = *reinterpret_cast<void**>(0x00BF1648);
@@ -114,11 +101,30 @@ namespace
 
         const auto beginText = reinterpret_cast<BeginTextFunction>(
             vtable[0x4C / sizeof(void*)]);
+        const auto endText = reinterpret_cast<EndTextFunction>(
+            vtable[0x50 / sizeof(void*)]);
         const auto drawText = reinterpret_cast<DrawTextFunction>(
             vtable[0x54 / sizeof(void*)]);
-        if (beginText == nullptr || drawText == nullptr)
+        if (beginText == nullptr || endText == nullptr || drawText == nullptr)
         {
             return 0;
+        }
+
+        const dfl::performance_overlay::detail::ScopedTextDrawing textDrawing(
+            renderer, beginText, endText);
+
+        // Preserve the original monitoring flag while balancing its borrowed
+        // stack descriptor before starting the IJL15 overlay's text block.
+        if (performanceObject != nullptr
+            && *reinterpret_cast<const std::uint8_t*>(
+                reinterpret_cast<const std::uint8_t*>(performanceObject)
+                + NativeMonitoringFlagOffset) == 1)
+        {
+            const auto originalRenderer =
+                reinterpret_cast<OriginalPerformanceFunction>(
+                    OriginalPerformanceRenderer);
+            originalRenderer(performanceObject);
+            endText(renderer);
         }
 
         TextState state{};

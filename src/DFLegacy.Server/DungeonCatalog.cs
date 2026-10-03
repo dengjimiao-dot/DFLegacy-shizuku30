@@ -365,7 +365,7 @@ public sealed class DungeonCatalog
     }
 
     private static bool IsChampionCandidate(GameDungeonMonster monster) =>
-        monster.Type == GameDungeonMonsterTypes.Normal
+        monster.IsEnemy && monster.Type == GameDungeonMonsterTypes.Normal
         && monster.IsBoxMonster == 0
         && !monster.IsHellHidden;
 
@@ -592,7 +592,10 @@ public sealed class DungeonCatalog
                     Level: checked((byte)Math.Clamp(level, 1, byte.MaxValue)),
                     Type: monster.Type,
                     X: monster.X,
-                    Y: monster.Y);
+                    Y: monster.Y)
+                {
+                    Team = monster.Team
+                };
             })
             .ToList();
         foreach (var passiveObject in map.PassiveObjects)
@@ -1354,6 +1357,7 @@ public sealed class DungeonCatalog
     private static MapMonsterDefinition[] ParseMonsterRows(string text)
     {
         var result = new List<MapMonsterDefinition>();
+        var teams = ParseAllBlockIntegers(text, "monster team").ToArray();
         foreach (var block in ParseAllBlocks(text, "monster"))
         {
             foreach (var rawLine in block.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
@@ -1371,7 +1375,8 @@ public sealed class DungeonCatalog
                         checked((ushort)values[3]),
                         checked((ushort)values[4]),
                         values[1] != 0,
-                        values[2]));
+                        values[2],
+                        result.Count < teams.Length ? teams[result.Count] : 100));
                 }
             }
         }
@@ -1883,7 +1888,8 @@ public sealed class DungeonCatalog
         ushort X = 0,
         ushort Y = 0,
         bool UsesDungeonLevel = true,
-        int LevelOffsetOrFixedLevel = 0);
+        int LevelOffsetOrFixedLevel = 0,
+        int Team = 100);
 
     private sealed record MapSpecialPassiveObject(
         byte ObjectIndex,

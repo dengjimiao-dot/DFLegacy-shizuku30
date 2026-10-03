@@ -82,7 +82,14 @@ public sealed record GameDungeonMonster(
     byte BoxIndex = 0,
     bool IsHellHidden = false,
     ushort X = 0,
-    ushort Y = 0);
+    ushort Y = 0)
+{
+    // Server-only MAP metadata. DF2008 reads team from its local monster row;
+    // do not add it to the nine-byte START_MAP monster record.
+    public int Team { get; init; } = 100;
+
+    public bool IsEnemy => Team == 100;
+}
 
 public static class GameDungeonMonsterTypes
 {
@@ -382,6 +389,9 @@ public static class GameProtocolEngine
 
     // DF2008 CMD 15 reads error 0x16 followed by the exhausted party-member index.
     public const byte EnterDungeonSelectionInsufficientFatigueError = 0x16;
+    // MOVE_MAP error 0x13 rejects an invalid dungeon lifecycle state. DF2008's
+    // 0x00414331 branch reads one error byte and clears actor +0x244's move flag.
+    public const byte MoveMapInvalidStateError = 0x13;
     // DF2008 starts ground-item pickup optimistically. CMD 46 error 0x15 stays
     // silent but enters the common rollback at 0x00414198, which clears the
     // pending pickup flag at item-object + 0x7A5 so the same item falls back.

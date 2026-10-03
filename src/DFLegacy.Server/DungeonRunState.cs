@@ -17,6 +17,14 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
 
     public bool IsActive => _layout is not null && _current is not null;
 
+    public bool IsCleared { get; private set; }
+
+    public bool IsBossClearPending { get; private set; }
+
+    public bool IsCurrentTerminalRoom => IsActive
+        && RoomX == _layout!.BossX && RoomY == _layout!.BossY
+        && _current!.EncounterRoom.MapType == DungeonMapType.Boss;
+
     public ushort DungeonId => _layout?.DungeonId ?? 0;
 
     public byte Difficulty { get; private set; }
@@ -85,7 +93,8 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
         IDropRandomSource? random = null)
     {
         transition = null!;
-        if (!IsActive || roomX == RoomX && roomY == RoomY)
+        if (!IsActive || IsCleared || IsBossClearPending
+            || roomX == RoomX && roomY == RoomY)
         {
             return false;
         }
@@ -100,8 +109,13 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
 
     public bool MarkMonsterDefeated(ushort uniqueId)
     {
-        if (_current is null
-            || !_current.EncounterRoom.Monsters.Any(monster => monster.UniqueId == uniqueId))
+        if (_current is null)
+        {
+            return false;
+        }
+        var defeatedMonster = _current.EncounterRoom.Monsters.FirstOrDefault(
+            monster => monster.UniqueId == uniqueId);
+        if (defeatedMonster is null)
         {
             return false;
         }
@@ -110,6 +124,24 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
         if (first)
         {
             TryCompleteCurrentHellRoom();
+            if (IsCurrentTerminalRoom)
+            {
+                var aliveMonsterIds = _current.EncounterRoom.Monsters
+                    .Where(monster => !_current.DefeatedMonsterIds.Contains(monster.UniqueId))
+                    .Select(monster => monster.UniqueId)
+                    .ToHashSet();
+                var decision = DungeonRoomClearRules.Evaluate(
+                    _current.EncounterRoom, defeatedMonster, aliveMonsterIds);
+                if (decision.ShouldEnableClear)
+                {
+                    IsCleared = true;
+                    IsBossClearPending = false;
+                }
+                else if (decision.Reason == DungeonRoomClearReason.LastBossDefeated)
+                {
+                    IsBossClearPending = true;
+                }
+            }
         }
 
         return first;
@@ -117,8 +149,37 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
 
     public bool HasClearedMap(ushort mapId) => mapId != 0
         && _rooms.Values.Any(room => room.EncounterRoom.MapId == mapId
-            && room.EncounterRoom.Monsters.All(monster =>
-                room.DefeatedMonsterIds.Contains(monster.UniqueId)));
+            && (room == _current && IsCleared
+                || room.EncounterRoom.Monsters.Where(monster => monster.IsEnemy).All(monster =>
+                    room.DefeatedMonsterIds.Contains(monster.UniqueId))));
+
+    public bool BeginBossClear()
+    {
+        if (!IsCurrentTerminalRoom || IsCleared || IsBossClearPending
+            || !_current!.EncounterRoom.Monsters.Any(monster =>
+                monster.IsEnemy && monster.Type == GameDungeonMonsterTypes.Boss))
+        {
+            return false;
+        }
+
+        // A valid final BOSS_DIE_CHECK starts the death-animation window.
+        // Do not let MOVE_MAP discard it before the later CMD 42 confirmation.
+        IsBossClearPending = true;
+        return true;
+    }
+
+    public bool TryEnableEmptyBossClear()
+    {
+        if (!IsCurrentTerminalRoom || IsCleared
+            || _current!.EncounterRoom.Monsters.Any(monster => monster.IsEnemy))
+        {
+            return false;
+        }
+
+        IsCleared = true;
+        IsBossClearPending = false;
+        return true;
+    }
 
     public bool MarkPassiveObjectDestroyed(byte objectIndex)
     {
@@ -187,6 +248,8 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
 
     public void Stop()
     {
+        IsCleared = false;
+        IsBossClearPending = false;
         _rooms.Clear();
         _layout = null;
         _current = null;
@@ -308,7 +371,7 @@ public sealed class DungeonRunState(DungeonCatalog catalog)
             return;
         }
 
-        if (_current.EncounterRoom.Monsters.All(monster =>
+        if (_current.EncounterRoom.Monsters.Where(monster => monster.IsEnemy).All(monster =>
                 _current.DefeatedMonsterIds.Contains(monster.UniqueId)))
         {
             _current.HellEncounterCleared = true;

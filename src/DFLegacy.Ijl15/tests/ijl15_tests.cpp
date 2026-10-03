@@ -15,6 +15,7 @@
 #include "ijl15.h"
 #include "memory_patch.h"
 #include "output_paths.h"
+#include "performance_overlay.h"
 
 namespace
 {
@@ -71,6 +72,106 @@ bool LoadApi(IjlApi* api)
         && api->Read != nullptr
         && api->Write != nullptr
         && api->ErrorStr != nullptr;
+}
+
+struct FakeTextRenderer final
+{
+    virtual void BeginText(const void* state)
+    {
+        ++Begins;
+        if (Active == 0)
+        {
+            State = state;
+            Active = 1;
+        }
+    }
+
+    virtual void EndText()
+    {
+        ++Ends;
+        State = nullptr;
+        Active = 0;
+    }
+
+    std::array<std::uint8_t, 0x29> Padding0{};
+    std::uint8_t Active = 0;
+    std::array<std::uint8_t, 0x12> Padding1{};
+    const void* State = nullptr;
+    int Begins = 0;
+    int Ends = 0;
+};
+
+bool TestPerformanceOverlayTextLifetime()
+{
+    using namespace dfl::performance_overlay::detail;
+    FakeTextRenderer renderer;
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(&renderer);
+    if (reinterpret_cast<const std::uint8_t*>(&renderer.Active) - bytes != 0x2D
+        || reinterpret_cast<const std::uint8_t*>(&renderer.State) - bytes != 0x40)
+    {
+        return false;
+    }
+    auto** vtable = *reinterpret_cast<void***>(&renderer);
+    const auto beginText = reinterpret_cast<BeginTextFunction>(vtable[0]);
+    const auto endText = reinterpret_cast<EndTextFunction>(vtable[1]);
+    int overlayState = 1;
+    int nativeState = 2;
+    int callerState = 3;
+    int noticeState = 4;
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        {
+            const ScopedTextDrawing drawing(&renderer, beginText, endText);
+            beginText(&renderer, &overlayState);
+            if (renderer.State != &overlayState || renderer.Active != 1)
+            {
+                return false;
+            }
+        }
+        if (renderer.State != nullptr || renderer.Active != 0)
+        {
+            return false;
+        }
+        // A dungeon warning must be able to install its own font next frame.
+        beginText(&renderer, &noticeState);
+        if (renderer.State != &noticeState)
+        {
+            return false;
+        }
+        endText(&renderer);
+    }
+
+    beginText(&renderer, &callerState);
+    {
+        const ScopedTextDrawing drawing(&renderer, beginText, endText);
+        beginText(&renderer, &nativeState);
+        if (renderer.State != &nativeState)
+        {
+            return false;
+        }
+        endText(&renderer);
+        beginText(&renderer, &overlayState);
+        if (renderer.State != &overlayState)
+        {
+            return false;
+        }
+    }
+    if (renderer.Active != 1 || renderer.State != &callerState)
+    {
+        return false;
+    }
+    const int begins = renderer.Begins;
+    const int ends = renderer.Ends;
+    const auto earlyReturn = [&]()
+    {
+        const ScopedTextDrawing drawing(&renderer, beginText, endText);
+        return;
+    };
+    earlyReturn();
+    return renderer.Active == 1
+        && renderer.State == &callerState
+        && renderer.Begins == begins + 1
+        && renderer.Ends == ends + 2;
 }
 
 bool TestMemoryPatchHelpers()
@@ -336,6 +437,10 @@ bool TestRelativeOutputPathPolicy()
 
 int main()
 {
+    if (!TestPerformanceOverlayTextLifetime())
+    {
+        return Fail("performance overlay text state was not released or restored");
+    }
     if (!TestMemoryPatchHelpers())
     {
         return Fail("memory patch helpers failed");

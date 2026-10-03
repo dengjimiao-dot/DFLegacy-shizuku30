@@ -765,9 +765,10 @@ public sealed class EntranceService(
 
                 async Task EnableEmptyBossRoomSettlementAsync(DungeonRoomDefinition room)
                 {
-                    if (room.Monsters.Length != 0
+                    if (room.Monsters.Any(monster => monster.IsEnemy)
                         || dungeonClearEnabled
-                        || room.MapType != DungeonMapType.Boss)
+                        || room.MapType != DungeonMapType.Boss
+                        || !dungeonRun.TryEnableEmptyBossClear())
                     {
                         return;
                     }
@@ -10534,6 +10535,20 @@ public sealed class EntranceService(
                             {
                                 var targetX = request.Body[2];
                                 var targetY = request.Body[3];
+                                if (dungeonClearEnabled || dungeonRun.IsCleared
+                                    || dungeonRun.IsBossClearPending)
+                                {
+                                    var completedMoveError = GameProtocolEngine.CreateCommandError(
+                                        request, GameProtocolEngine.MoveMapInvalidStateError);
+                                    await completedMoveError.WriteAsync(stream, serverToken);
+                                    Interlocked.Increment(ref runtimeSession.SentPackets);
+                                    LogPacket("TX", runtimeSession, completedMoveError);
+                                    logger.LogInformation(
+                                        "Rejected MOVE_MAP after boss completion for dungeon {DungeonId}; cleared={Cleared}, bossClearPending={BossClearPending}, resultSent={ResultSent}.",
+                                        currentDungeonId, dungeonClearEnabled || dungeonRun.IsCleared,
+                                        dungeonRun.IsBossClearPending, dungeonResultSent);
+                                    continue;
+                                }
                                 if (targetX == currentDungeonRoomX
                                     && targetY == currentDungeonRoomY)
                                 {
@@ -10581,14 +10596,7 @@ public sealed class EntranceService(
 
                                     currentDungeonRoomX = targetX;
                                     currentDungeonRoomY = targetY;
-                                    dungeonClearEnabled = false;
-                                    dungeonResultSent = false;
-                                    dungeonCardLayoutSent = false;
-                                    dungeonCardRightsSent = false;
-                                    dungeonCardSelectionDeadline = null;
-                                    dungeonClearReward = null;
-                                    dungeonFreeCardIndex = null;
-                                    dungeonGoldCardIndex = null;
+                                    // Settlement and card grants belong to the run, not the room.
                                     aliveDungeonMonsters.Clear();
                                     reportedBossDeaths.Clear();
                                     bossCascadeMonsterDeaths.Clear();
@@ -10687,7 +10695,7 @@ public sealed class EntranceService(
                                 out var bossDieCheck);
                             var bossIds = currentDungeonRoom is not null
                                 ? currentDungeonRoom.Monsters
-                                    .Where(monster => monster.Type
+                                    .Where(monster => monster.IsEnemy && monster.Type
                                         == GameDungeonMonsterTypes.Boss)
                                     .Select(monster => monster.UniqueId)
                                     .ToHashSet()
@@ -10695,8 +10703,10 @@ public sealed class EntranceService(
                             var validBoss = parsed
                                 && currentDungeonRoom is not null
                                 && currentDungeonRoom.MapType == DungeonMapType.Boss
+                                && !dungeonClearEnabled && !dungeonRun.IsCleared
                                 && bossDieCheck.ParticipantId == localUserId
-                                && bossIds.Contains(bossDieCheck.BossId);
+                                && bossIds.Contains(bossDieCheck.BossId)
+                                && aliveDungeonMonsters.Contains(bossDieCheck.BossId);
 
                             GameServerPacket bossDieReply;
                             if (validBoss)
@@ -10706,9 +10716,12 @@ public sealed class EntranceService(
                                     reportedBossDeaths.Contains);
                                 if (allBossesReported)
                                 {
+                                    dungeonRun.BeginBossClear();
                                     bossCascadeMonsterDeaths.UnionWith(
                                         aliveDungeonMonsters.Where(monsterId =>
-                                            !bossIds.Contains(monsterId)));
+                                            !bossIds.Contains(monsterId)
+                                            && currentDungeonRoom!.Monsters.Any(monster =>
+                                                monster.UniqueId == monsterId && monster.IsEnemy)));
                                 }
 
                                 bossDieReply = GameProtocolEngine.CreateBossDieCheck(
@@ -10959,7 +10972,7 @@ public sealed class EntranceService(
                                 var championRewardOrdinal =
                                     GameProtocolEngine.NoChampionRewardOrdinal;
 
-                                switch (defeatedMonster.Type)
+                                switch (defeatedMonster.IsEnemy ? defeatedMonster.Type : byte.MaxValue)
                                 {
                                     case GameDungeonMonsterTypes.Champion:
                                     case GameDungeonMonsterTypes.SuperChampion:
@@ -10978,7 +10991,7 @@ public sealed class EntranceService(
                                             ushort.MaxValue,
                                             dungeonBossMonsterKills + 1);
                                         break;
-                                    default:
+                                    case GameDungeonMonsterTypes.Normal:
                                         dungeonNormalMonsterKills = Math.Min(
                                             ushort.MaxValue,
                                             dungeonNormalMonsterKills + 1);
@@ -10986,7 +10999,7 @@ public sealed class EntranceService(
                                 }
 
                                 var protocolDrops = new List<GameDungeonDrop>(6);
-                                if (!isBossCascadeDeath)
+                                if (defeatedMonster.IsEnemy && !isBossCascadeDeath)
                                 {
                                     foreach (var generatedDrop in dropGenerator.Generate(
                                                  defeatedMonster.Level,
@@ -11080,13 +11093,13 @@ public sealed class EntranceService(
                                 Interlocked.Increment(ref runtimeSession.SentPackets);
                                 LogPacket("TX", runtimeSession, monsterDie);
 
-                                if (!isBossCascadeDeath && !tutorialDungeonActive)
+                                if (defeatedMonster.IsEnemy && !isBossCascadeDeath && !tutorialDungeonActive)
                                 {
                                     await GrantMonsterQuestItemsAsync(
                                         defeatedMonster.MonsterIndex);
                                 }
 
-                                if (!isBossCascadeDeath && activeCharacter is not null)
+                                if (defeatedMonster.IsEnemy && !isBossCascadeDeath && activeCharacter is not null)
                                 {
                                     var gainedExperience =
                                         dungeonCatalog.TryGetDefinition(
@@ -11194,14 +11207,14 @@ public sealed class EntranceService(
                                         currentDungeonRoomY);
                                 }
 
-                                var clearDecision = DungeonRoomClearRules.Evaluate(
-                                    currentDungeonRoom!,
-                                    defeatedMonster,
-                                    aliveDungeonMonsters);
+                                var clearDecision = tutorialDungeonActive || dungeonRun.IsCurrentTerminalRoom
+                                    ? DungeonRoomClearRules.Evaluate(
+                                        currentDungeonRoom!, defeatedMonster, aliveDungeonMonsters)
+                                    : DungeonRoomClearDecision.None;
                                 if (clearDecision.ForcedMonsterIds.Length > 0)
                                 {
-                                    logger.LogWarning(
-                                        "Dungeon {DungeonId} received the final boss MONSTER_DIE with {MonsterCount} monsters still alive in room ({RoomX},{RoomY}); waiting for the native BOSS_DIE_CHECK/ALLDIE_MONSTER cascade instead of injecting a solo UDP peer packet.",
+                                    logger.LogInformation(
+                                        "Dungeon {DungeonId} final boss MONSTER_DIE has {MonsterCount} remaining enemy actors in room ({RoomX},{RoomY}); waiting only for enemy cascade confirmations, not allied actors.",
                                         currentDungeonId,
                                         clearDecision.ForcedMonsterIds.Length,
                                         currentDungeonRoomX,

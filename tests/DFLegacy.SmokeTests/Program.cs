@@ -18,6 +18,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
 EquipmentReinforcementSmokeTests.Run(Check);
 await HiddenDungeonQuestSmokeTests.RunAsync(Check);
 QuestMapSmokeTests.Run(Check);
+DungeonCompletionSmokeTests.Run(Check);
 QuestPvpRankSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
 WorldMapSmokeTests.Run(Check);
@@ -7043,7 +7044,7 @@ Check(lastBossDecision.Reason == DungeonRoomClearReason.LastBossDefeated
                 trailingNormalActor.UniqueId,
                 secondTrailingNormalActor.UniqueId
             }),
-    "the last real boss selects the remaining monsters but waits for their native death confirmations");
+    "the last real boss waits for remaining enemy cascade confirmations, not allied actors");
 Check(bossDieCheckComplete.ProtocolId == GameProtocolEngine.BossDieCheckNotification
         && bossDieCheckComplete.Payload.SequenceEqual(new byte[] { 1, 1, 4, 0 }),
     "boss cascade uses NOTI 127 so the solo client runs its native ALLDIE_MONSTER path");
@@ -7054,7 +7055,7 @@ var finalCascadeDeathDecision = DungeonRoomClearRules.Evaluate(
 Check(finalCascadeDeathDecision.Reason
         == DungeonRoomClearReason.AllMonstersDefeated
         && finalCascadeDeathDecision.ShouldEnableClear,
-    "the boss room becomes clear only after every cascaded monster confirms normal death");
+    "late native cascade confirmations remain valid without being a prerequisite for boss clear");
 
 var noBossMap = CreateDungeonRoom(
     DungeonMapType.Boss,
