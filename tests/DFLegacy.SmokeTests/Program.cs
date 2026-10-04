@@ -21,6 +21,8 @@ QuestMapSmokeTests.Run(Check);
 DungeonCompletionSmokeTests.Run(Check);
 QuestPvpRankSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
+CeraShopAvatarPurchaseSmokeTests.Run(Check);
+await CreatureArtifactDisposalSmokeTests.RunAsync(Check);
 WorldMapSmokeTests.Run(Check);
 DungeonClearExperienceSmokeTests.Run(Check);
 ItemSealingSmokeTests.Run(Check);
@@ -1730,13 +1732,30 @@ var parsedCeraShopProductType = parsedCeraShopProduct?.GetType();
 Check(parsedCeraShopRequest
     && !(bool)ceraShopParserArguments[2]!
     && parsedCeraShopProducts.Length == 1
-    && (byte)parsedCeraShopProductType!.GetProperty("ProductType")!
+    && (byte)parsedCeraShopProductType!.GetProperty("AvatarAbilityIndex")!
         .GetValue(parsedCeraShopProduct!)! == 0x0F
-    && (ushort)parsedCeraShopProductType.GetProperty("AttributeValue")!
+    && (ushort)parsedCeraShopProductType.GetProperty("PeriodCode")!
         .GetValue(parsedCeraShopProduct!)! == 3
     && (uint)parsedCeraShopProductType.GetProperty("CommodityNo")!
         .GetValue(parsedCeraShopProduct!)! == 140032,
-    "DFLegacy command 67 parses gift mode, product count and seven-byte product rows");
+    "DFLegacy command 67 keeps the ability byte separate from the period code in seven-byte product rows");
+object?[] observedAvatarPurchaseArguments =
+[
+    Convert.FromHexString("0A000001040300DCA90300"), null, false
+];
+var parsedObservedAvatarPurchase = ceraShopParser is not null
+    && (bool)ceraShopParser.Invoke(null, observedAvatarPurchaseArguments)!;
+var observedAvatarProduct = parsedObservedAvatarPurchase
+    ? ((Array)observedAvatarPurchaseArguments[1]!).GetValue(0)
+    : null;
+Check(parsedObservedAvatarPurchase
+        && (byte)observedAvatarProduct!.GetType().GetProperty("AvatarAbilityIndex")!
+            .GetValue(observedAvatarProduct)! == 4
+        && (ushort)observedAvatarProduct.GetType().GetProperty("PeriodCode")!
+            .GetValue(observedAvatarProduct)! == 3
+        && (uint)observedAvatarProduct.GetType().GetProperty("CommodityNo")!
+            .GetValue(observedAvatarProduct)! == 240_092,
+    "observed DF2008 avatar purchase decodes the fifth ability and permanent period without converting it to row zero");
 var ceraUpdate = GameProtocolEngine.CreateCeraUpdate(true, 1_000_000);
 Check(ceraUpdate.ProtocolId == GameProtocolEngine.CeraUpdateNotification
     && ceraUpdate.Payload.SequenceEqual(
@@ -7966,6 +7985,25 @@ if (!string.IsNullOrWhiteSpace(realPvfPath) && File.Exists(realPvfPath))
                 Days: 15
             },
         "DFLegacy Cera catalog resolves avatar cash prices from item definitions");
+    var allPvfAvatarOptionsValid = true;
+    foreach (var product in pvfCeraCatalog.Products.Where(product => product.ClientCategory == 0))
+    {
+        if (!pvfCeraItemCatalog.TryGetDefinition(product.ItemId, out var avatarDefinition))
+        {
+            allPvfAvatarOptionsValid = false;
+            continue;
+        }
+
+        for (var option = 0; option < Math.Min(avatarDefinition.AvatarSelectableAbilityCount, byte.MaxValue); option++)
+        {
+            allPvfAvatarOptionsValid &= CeraShopPurchaseItemPlanner.TryCreate(
+                    product, checked((byte)option), pvfCeraItemCatalog, out var avatarAttachment)
+                && avatarAttachment.AvatarAbilityIndex == option
+                && avatarAttachment.AvatarRemainingSeconds == 0;
+        }
+    }
+    Check(allPvfAvatarOptionsValid,
+        "real PVF Cera avatar products preserve every configured selectable ability independently of period pricing");
     Check(pvfCeraCatalog.Products.Any(product =>
                 product.ItemId == 190
                 && product.DirectCurrencyGrant

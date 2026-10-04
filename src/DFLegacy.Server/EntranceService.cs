@@ -4937,6 +4937,7 @@ public sealed class EntranceService(
                                 DisjointCatalog.JackpotRollUpperBound);
                             if (!DisjointItemPlanner.TryCreate(
                                     mainInventory,
+                                    creatureInventory,
                                     sourceSlot,
                                     itemSpace,
                                     GetInventoryWeightLimit(activeCharacter),
@@ -4984,7 +4985,7 @@ public sealed class EntranceService(
                                 disjointWarehouseSettlement.Warehouse,
                                 serverToken,
                                 avatarInventory: avatarInventory.Values,
-                                creatureInventory: creatureInventory.Values,
+                                creatureInventory: disjointPlan.CreatureInventory.Values,
                                 warehouseCapacity:
                                     disjointWarehouseSettlement.Capacity,
                                 expectedWarehouseCapacity: warehouseCapacity);
@@ -5001,6 +5002,8 @@ public sealed class EntranceService(
 
                             var warehouseCapacityChanged =
                                 AdoptSavedWarehouseUpgradeState(savedDisjoint);
+                            creatureInventory = (savedDisjoint.CreatureInventory ?? [])
+                                .ToDictionary(item => item.Slot);
                             var disjointReply = GameProtocolEngine.CreateDisjointItemReply(
                                 disjointPlan.SourceSlot,
                                 disjointPlan.ItemSpace,
@@ -7208,9 +7211,16 @@ public sealed class EntranceService(
                                 || !TryReadConsumeItems(
                                     request.Body,
                                     out var listType,
-                                    out var requestedConsumptions)
-                                || listType != 0)
+                                    out var requestedConsumptions))
                             {
+                                // DF2008 0x00410CEF reads the failed request's
+                                // list byte before releasing its pending operation.
+                                var error = GameProtocolEngine.CreateDeleteItemError(
+                                    request.Body.Length > 2 ? request.Body[2] : (byte)0,
+                                    errorCode: 0x11);
+                                await error.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, error);
                                 logger.LogWarning(
                                     "Rejected consume-items transaction activeCharacter={HasCharacter}, body={Body}.",
                                     activeCharacter is not null,
@@ -7218,55 +7228,10 @@ public sealed class EntranceService(
                                 continue;
                             }
 
-                            var completionEntries =
-                                new List<GameItemConsumptionEntry>(
-                                    requestedConsumptions.Length);
-                            var consumptionBySlot = new Dictionary<ushort, ulong>();
-                            var validTransaction = true;
-                            foreach (var requestedConsumption in requestedConsumptions)
-                            {
-                                if (!mainInventory.TryGetValue(
-                                        requestedConsumption.Slot,
-                                        out var inventoryItem)
-                                    || requestedConsumption.RequestedCount == 0
-                                    || requestedConsumption.ItemId != inventoryItem.ItemId
-                                    || IsEquipmentItem(inventoryItem.ItemId))
-                                {
-                                    logger.LogWarning(
-                                        "Consume-items transaction has an invalid entry operation={Operation}, slot={Slot}, requestedItem={RequestedItemId}, actualItem={ActualItemId}, requested={RequestedCount}.",
-                                        requestedConsumption.Operation,
-                                        requestedConsumption.Slot,
-                                        requestedConsumption.ItemId,
-                                        inventoryItem?.ItemId,
-                                        requestedConsumption.RequestedCount);
-                                    validTransaction = false;
-                                    break;
-                                }
-
-                                var accumulated = consumptionBySlot.GetValueOrDefault(
-                                    requestedConsumption.Slot);
-                                accumulated += requestedConsumption.RequestedCount;
-                                if (accumulated > inventoryItem.CountOrValue)
-                                {
-                                    logger.LogWarning(
-                                        "Consume-items transaction exceeds slot={Slot} stack item={ItemId}, requestedTotal={RequestedTotal}, current={CurrentCount}.",
-                                        requestedConsumption.Slot,
-                                        inventoryItem.ItemId,
-                                        accumulated,
-                                        inventoryItem.CountOrValue);
-                                    validTransaction = false;
-                                    break;
-                                }
-
-                                consumptionBySlot[requestedConsumption.Slot] =
-                                    accumulated;
-                                completionEntries.Add(
-                                    new GameItemConsumptionEntry(
-                                        requestedConsumption.Slot,
-                                        requestedConsumption.RequestedCount));
-                            }
-
-                            if (!validTransaction)
+                            var sourceInventory = listType == 7 ? creatureInventory : mainInventory;
+                            if (!ItemDeletionPlanner.TryCreate(
+                                    sourceInventory, listType, requestedConsumptions,
+                                    itemCatalog, out var deletionPlan))
                             {
                                 var deleteItemError =
                                     GameProtocolEngine.CreateDeleteItemError(
@@ -7275,47 +7240,48 @@ public sealed class EntranceService(
                                 await deleteItemError.WriteAsync(stream, serverToken);
                                 Interlocked.Increment(ref runtimeSession.SentPackets);
                                 LogPacket("TX", runtimeSession, deleteItemError);
+                                logger.LogWarning(
+                                    "Rejected item deletion listType={ListType}, body={Body}.",
+                                    listType,
+                                    Convert.ToHexString(request.Body));
                                 continue;
                             }
 
-                            foreach (var (slot, requestedCount) in consumptionBySlot)
-                            {
-                                var inventoryItem = mainInventory[slot];
-                                var remaining = inventoryItem.CountOrValue
-                                    - checked((uint)requestedCount);
-                                if (remaining == 0)
-                                {
-                                    mainInventory.Remove(slot);
-                                }
-                                else
-                                {
-                                    mainInventory[slot] = inventoryItem with
-                                    {
-                                        CountOrValue = remaining
-                                    };
-                                }
-                            }
-
-                            activeCharacter = await store.SaveCharacterItemSpacesAsync(
+                            var plannedMainInventory = listType == 0 ? deletionPlan.Inventory : mainInventory;
+                            var plannedCreatureInventory = listType == 7 ? deletionPlan.Inventory : creatureInventory;
+                            var savedDeletion = await store.SaveCharacterItemSpacesAsync(
                                 accountName,
                                 activeCharacter.Id,
                                 currentGold,
-                                mainInventory.Values,
+                                plannedMainInventory.Values,
                                 equippedInventory.Values,
                                 warehouseInventory.Values,
                                 serverToken,
-                                avatarInventory: avatarInventory.Values) ?? activeCharacter;
+                                avatarInventory: avatarInventory.Values,
+                                creatureInventory: plannedCreatureInventory.Values);
+                            if (savedDeletion is null)
+                            {
+                                var error = GameProtocolEngine.CreateDeleteItemError(listType, 0x11);
+                                await error.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, error);
+                                continue;
+                            }
+
+                            activeCharacter = savedDeletion;
+                            mainInventory = plannedMainInventory;
+                            creatureInventory = plannedCreatureInventory;
 
                             foreach (var requestedConsumption in requestedConsumptions)
                             {
                                 logger.LogInformation(
-                                    "Consumed material listType={ListType}, operation={Operation}, slot={Slot}, item={ItemId}, consumed={ConsumedCount}, remaining={RemainingCount}.",
+                                    "Deleted/consumed item listType={ListType}, operation={Operation}, slot={Slot}, item={ItemId}, consumed={ConsumedCount}, remaining={RemainingCount}.",
                                     listType,
                                     requestedConsumption.Operation,
                                     requestedConsumption.Slot,
                                     requestedConsumption.ItemId,
                                     requestedConsumption.RequestedCount,
-                                    mainInventory.TryGetValue(
+                                    deletionPlan.Inventory.TryGetValue(
                                         requestedConsumption.Slot,
                                         out var remainingItem)
                                         ? remainingItem.CountOrValue
@@ -7325,7 +7291,7 @@ public sealed class EntranceService(
                             var deleteItemReply =
                                 GameProtocolEngine.CreateDeleteItemReply(
                                     listType,
-                                    completionEntries);
+                                    deletionPlan.CompletionEntries);
                             await deleteItemReply.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, deleteItemReply);
@@ -8097,7 +8063,7 @@ public sealed class EntranceService(
                                 }
 
                                 if (!product.UsesMainInventory
-                                    && requestedProduct.AttributeValue
+                                    && requestedProduct.PeriodCode
                                         != product.AttributeValue)
                                 {
                                     purchaseValid = false;
@@ -8298,19 +8264,16 @@ public sealed class EntranceService(
                                     continue;
                                 }
 
-                                var purchasedItem = CharacterItemIdentity.Ensure(
-                                    new CharacterMailAttachmentRecord(
-                                    product.ItemId,
-                                    product.Quantity,
-                                    Durability: itemDefinition.InventoryCategory
-                                        == ItemInventoryCategory.Equipment
-                                            ? itemCatalog.GetInitialDurability(product.ItemId)
-                                            : itemDefinition.IsEquipment
-                                                ? (ushort)1_000
-                                                : (ushort)0,
-                                    SealState: CharacterItemSealing.GetInitialSealState(
-                                        itemDefinition)),
-                                    itemDefinition);
+                                if (!CeraShopPurchaseItemPlanner.TryCreate(
+                                        product,
+                                        requestedProduct.AvatarAbilityIndex,
+                                        itemCatalog,
+                                        out var purchasedItem))
+                                {
+                                    purchaseValid = false;
+                                    errorProduct = requestedProduct;
+                                    break;
+                                }
                                 var placementFailure = InventoryPlacementFailure.None;
                                 if (itemDefinition.InventoryCategory
                                         == ItemInventoryCategory.Avatar
@@ -8517,6 +8480,15 @@ public sealed class EntranceService(
                                 _ = ceraShopCatalog.TryGetProduct(
                                     requestedProduct.CommodityNo,
                                     out var purchasedProduct);
+                                if (purchasedProduct.ClientCategory == 0)
+                                {
+                                    logger.LogInformation(
+                                        "Purchased Cera-shop avatar {ItemId}: commodity={CommodityNo}, abilityIndex={AbilityIndex}, periodCode={PeriodCode}.",
+                                        purchasedProduct.ItemId,
+                                        requestedProduct.CommodityNo,
+                                        requestedProduct.AvatarAbilityIndex,
+                                        requestedProduct.PeriodCode);
+                                }
                                 var buyReply =
                                     GameProtocolEngine.CreateCeraShopBuyReply(
                                         purchasedProduct.ClientCategory,
@@ -13667,7 +13639,7 @@ public sealed class EntranceService(
     private static bool TryReadConsumeItems(
         byte[] body,
         out byte listType,
-        out ConsumeItemsRequestEntry[] entries)
+        out ItemDeletionRequestEntry[] entries)
     {
         listType = byte.MaxValue;
         entries = [];
@@ -13687,11 +13659,11 @@ public sealed class EntranceService(
             return false;
         }
 
-        var parsed = new ConsumeItemsRequestEntry[count];
+        var parsed = new ItemDeletionRequestEntry[count];
         var offset = 4;
         for (var index = 0; index < count; index++)
         {
-            parsed[index] = new ConsumeItemsRequestEntry(
+            parsed[index] = new ItemDeletionRequestEntry(
                 BinaryPrimitives.ReadUInt16LittleEndian(
                     body.AsSpan(offset, sizeof(ushort))),
                 BinaryPrimitives.ReadUInt16LittleEndian(
@@ -13766,8 +13738,8 @@ public sealed class EntranceService(
         var parsed = new CeraShopPurchaseRequestItem[count];
         for (var index = 0; index < count; index++)
         {
-            var productType = body[offset];
-            var attributeValue = BinaryPrimitives.ReadUInt16LittleEndian(
+            var avatarAbilityIndex = body[offset];
+            var periodCode = BinaryPrimitives.ReadUInt16LittleEndian(
                 body.AsSpan(offset + 1, sizeof(ushort)));
             var commodityNo = BinaryPrimitives.ReadUInt32LittleEndian(
                 body.AsSpan(offset + 3, sizeof(uint)));
@@ -13777,8 +13749,8 @@ public sealed class EntranceService(
             }
 
             parsed[index] = new CeraShopPurchaseRequestItem(
-                productType,
-                attributeValue,
+                avatarAbilityIndex,
+                periodCode,
                 commodityNo);
             offset += 7;
         }
@@ -13892,15 +13864,9 @@ public sealed class EntranceService(
     private bool IsEquipmentItem(ushort itemId) => itemCatalog.IsEquipment(itemId);
 
     private readonly record struct CeraShopPurchaseRequestItem(
-        byte ProductType,
-        ushort AttributeValue,
+        byte AvatarAbilityIndex,
+        ushort PeriodCode,
         uint CommodityNo);
-    private readonly record struct ConsumeItemsRequestEntry(
-        ushort Operation,
-        ushort Slot,
-        ushort ItemId,
-        uint RequestedCount);
-
     internal readonly record struct SendMessageRequest(
         byte MessageType,
         ushort TargetOrItemSpace,

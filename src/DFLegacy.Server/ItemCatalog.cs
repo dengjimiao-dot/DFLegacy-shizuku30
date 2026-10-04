@@ -192,6 +192,8 @@ public sealed record ItemDefinition(
     CeraPackageDefinition? CeraPackage = null,
     int? InventoryLimit = null)
 {
+    public int AvatarSelectableAbilityCount { get; init; }
+
     public bool IsEquipment => ScriptKind == ItemScriptKind.Equipment;
 
     public bool IsTitle =>
@@ -257,6 +259,10 @@ public sealed class ItemCatalog
         @"^\s*\[package data\]\s*(?<value>.*?)^\s*\[/package data\]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline |
         RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    private static readonly Regex AvatarSelectAbilityPattern = new(
+        @"\[avatar select ability\]\s*(?<value>.*?)\s*\[/avatar select ability\]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant |
+        RegexOptions.IgnoreCase | RegexOptions.Singleline);
     private static readonly Regex BoosterGroupTagPattern = new(
         @"^\[(?<closing>/)?(?<tag>avatar|special avatar|cera|creature|equipment|stackable|etc|special creature|emblem)\]$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -668,8 +674,26 @@ public sealed class ItemCatalog
                      ReadDecimal(CreatureExperienceAmountRatePattern, text),
                      ReadCeraBooster(typeTag, text, scriptPath),
                      ReadCeraPackage(typeTag, text, scriptPath),
-                     ReadInteger(InventoryLimitPattern, text)));
+                     ReadInteger(InventoryLimitPattern, text))
+                {
+                    AvatarSelectableAbilityCount =
+                        ReadAvatarSelectableAbilityCount(text)
+                });
         }
+    }
+
+    private static int ReadAvatarSelectableAbilityCount(string text)
+    {
+        var match = AvatarSelectAbilityPattern.Match(text);
+        if (!match.Success)
+        {
+            return 0;
+        }
+
+        return match.Groups["value"].Value
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Split("//", 2, StringSplitOptions.None)[0].Trim())
+            .Count(line => line.StartsWith("`[", StringComparison.Ordinal));
     }
 
     private static CeraPackageDefinition? ReadCeraPackage(
