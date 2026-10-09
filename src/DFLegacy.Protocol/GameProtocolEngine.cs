@@ -89,6 +89,8 @@ public sealed record GameDungeonMonster(
     public int Team { get; init; } = 100;
 
     public bool IsEnemy => Team == 100;
+
+    public bool IsBossEntranceMonster { get; init; }
 }
 
 public static class GameDungeonMonsterTypes
@@ -392,6 +394,9 @@ public static class GameProtocolEngine
     // MOVE_MAP error 0x13 rejects an invalid dungeon lifecycle state. DF2008's
     // 0x00414331 branch reads one error byte and clears actor +0x244's move flag.
     public const byte MoveMapInvalidStateError = 0x13;
+    // 13339 check_boss_map returns 7 for unmet [boss room entrance condition].
+    // DF2008 consumes the same one-byte MOVE_MAP error without extra fields.
+    public const byte MoveMapBossEntranceConditionError = 7;
     // DF2008 starts ground-item pickup optimistically. CMD 46 error 0x15 stays
     // silent but enters the common rollback at 0x00414198, which clears the
     // pending pickup flag at item-object + 0x7A5 so the same item falls back.

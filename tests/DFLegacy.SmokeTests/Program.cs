@@ -19,6 +19,7 @@ EquipmentReinforcementSmokeTests.Run(Check);
 await HiddenDungeonQuestSmokeTests.RunAsync(Check);
 QuestMapSmokeTests.Run(Check);
 DungeonCompletionSmokeTests.Run(Check);
+DungeonBossEntranceSmokeTests.Run(Check);
 QuestPvpRankSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
 CeraShopAvatarPurchaseSmokeTests.Run(Check);
@@ -8105,6 +8106,7 @@ Check(generatedClearReward.FreeGoldAmount == 388,
         pvfScripts,
         pvfObjectDropGenerator,
         NullLogger<DungeonCatalog>.Instance);
+    DungeonBossEntranceSmokeTests.CheckRealPvf(Check, pvfDungeonCatalog);
     var pvfDungeonExperience = new DungeonExperienceCatalog(
         new ServerOptions(),
         pvfScripts,

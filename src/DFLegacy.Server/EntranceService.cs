@@ -10507,6 +10507,18 @@ public sealed class EntranceService(
                             {
                                 var targetX = request.Body[2];
                                 var targetY = request.Body[3];
+                                if (dungeonRun.IsBossRoomEntranceBlocked(targetX, targetY))
+                                {
+                                    var conditionError = GameProtocolEngine.CreateCommandError(
+                                        request, GameProtocolEngine.MoveMapBossEntranceConditionError);
+                                    await conditionError.WriteAsync(stream, serverToken);
+                                    Interlocked.Increment(ref runtimeSession.SentPackets);
+                                    LogPacket("TX", runtimeSession, conditionError);
+                                    logger.LogInformation(
+                                        "Rejected boss entrance for dungeon {DungeonId}: configured entrance condition is not satisfied.",
+                                        currentDungeonId);
+                                    continue;
+                                }
                                 if (dungeonClearEnabled || dungeonRun.IsCleared
                                     || dungeonRun.IsBossClearPending)
                                 {
@@ -10939,7 +10951,15 @@ public sealed class EntranceService(
                                     continue;
                                 }
 
+                                var bossEntranceWasOpen = dungeonRun.IsBossRoomEntranceOpen;
                                 dungeonRun.MarkMonsterDefeated(monsterUniqueId);
+                                if (!bossEntranceWasOpen && dungeonRun.IsBossRoomEntranceOpen)
+                                {
+                                    logger.LogInformation(
+                                        "Boss entrance condition satisfied for dungeon {DungeonId} after monster {MonsterIndex} died in room ({RoomX},{RoomY}).",
+                                        currentDungeonId, defeatedMonster.MonsterIndex,
+                                        currentDungeonRoomX, currentDungeonRoomY);
+                                }
 
                                 var championRewardOrdinal =
                                     GameProtocolEngine.NoChampionRewardOrdinal;
