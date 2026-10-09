@@ -44,6 +44,12 @@ public sealed record DungeonDefinition(
 
     public ushort[] HellTicketItemIds { get; init; } = [];
 
+    public ushort RequiredItemId { get; init; }
+
+    public uint RequiredItemCount { get; init; }
+
+    public bool ConsumeRequiredItem { get; init; }
+
     // DF2008 stores one value for each of its four dungeon difficulties. The
     // selected value is an expected maze-wide amount, not an exact quota.
     public int[] ChampionCounts { get; init; } = new int[4];
@@ -51,6 +57,52 @@ public sealed record DungeonDefinition(
     public DungeonBossEntranceCondition BossEntranceCondition { get; init; } =
         DungeonBossEntranceCondition.Unrestricted;
 
+    public bool TryConsumeRequiredItem(
+        IReadOnlyDictionary<ushort, CharacterItemRecord> inventory,
+        out Dictionary<ushort, CharacterItemRecord> remaining)
+    {
+        remaining = inventory.ToDictionary();
+        if (RequiredItemId == 0 || RequiredItemCount == 0)
+        {
+            return true;
+        }
+
+        var stacks = inventory.Values
+            .Where(item => item.ItemId == RequiredItemId && item.CountOrValue > 0)
+            .OrderBy(item => item.Slot)
+            .ToArray();
+        if (stacks.Sum(item => (long)item.CountOrValue) < RequiredItemCount)
+        {
+            return false;
+        }
+
+        if (!ConsumeRequiredItem)
+        {
+            return true;
+        }
+
+        var needed = RequiredItemCount;
+        foreach (var item in stacks)
+        {
+            var consumed = Math.Min(needed, item.CountOrValue);
+            needed -= consumed;
+            if (consumed == item.CountOrValue)
+            {
+                remaining.Remove(item.Slot);
+            }
+            else
+            {
+                remaining[item.Slot] = item with { CountOrValue = item.CountOrValue - consumed };
+            }
+
+            if (needed == 0)
+            {
+                break;
+            }
+        }
+
+        return true;
+    }
 }
 
 public readonly record struct DungeonRoomPosition(byte X, byte Y);
@@ -1014,7 +1066,9 @@ public sealed class DungeonCatalog
         specifications = new Dictionary<DungeonRoomPosition, ushort[]>();
         var mazes = ParseMazes(text);
         if (mazes.Length == 0
-            || !TryParseBossEntranceCondition(text, out var bossEntranceCondition))
+            || !TryParseBossEntranceCondition(text, out var bossEntranceCondition)
+            || !TryParseRequiredItem(text, out var requiredItemId,
+                out var requiredItemCount, out var consumeRequiredItem))
         {
             return false;
         }
@@ -1084,11 +1138,50 @@ public sealed class DungeonCatalog
                 ? checked((ushort)warRoomMap)
                 : (ushort)0,
             HellTicketItemIds = hellTicketItemIds,
+            RequiredItemId = requiredItemId,
+            RequiredItemCount = requiredItemCount,
+            ConsumeRequiredItem = consumeRequiredItem,
             ChampionCounts = NormalizeChampionCounts(
                 ParseInlineIntegers(text, "champion")),
             BossEntranceCondition = bossEntranceCondition
         };
         specifications = firstMaze.MapSpecifications;
+        return true;
+    }
+
+    private static bool TryParseRequiredItem(
+        string text,
+        out ushort itemId,
+        out uint count,
+        out bool consume)
+    {
+        itemId = 0;
+        count = 0;
+        consume = false;
+        var uncommented = Regex.Replace(text, @"//[^\r\n]*", string.Empty);
+        if (!Regex.IsMatch(uncommented, @"(?im)^\s*\[required item\]"))
+        {
+            return true;
+        }
+
+        var match = Regex.Match(uncommented, @"(?im)^\s*\[required item\]\s*([^\r\n]*)");
+        var values = Regex.Split(match.Groups[1].Value.Trim(), @"\s+");
+        if (values.Length != 3
+            || !int.TryParse(values[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var rawItemId)
+            || rawItemId is < -1 or > ushort.MaxValue
+            || !uint.TryParse(values[1], NumberStyles.None, CultureInfo.InvariantCulture, out var rawCount)
+            || values[2] is not ("0" or "1"))
+        {
+            return false;
+        }
+
+        if (rawItemId > 0 && rawCount > 0)
+        {
+            itemId = (ushort)rawItemId;
+            count = rawCount;
+            consume = values[2] == "1";
+        }
+
         return true;
     }
 

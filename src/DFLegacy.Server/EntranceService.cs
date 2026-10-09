@@ -10236,6 +10236,21 @@ public sealed class EntranceService(
                                 continue;
                             }
 
+                            if (!dungeon.TryConsumeRequiredItem(
+                                    mainInventory, out var plannedEntryInventory))
+                            {
+                                var requiredItemError =
+                                    GameProtocolEngine.CreateSelectDungeonMissingRequiredItemReply();
+                                await requiredItemError.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, requiredItemError);
+                                logger.LogInformation(
+                                    "Rejected dungeon {DungeonId} for character {CharacterId}: requires item {ItemId} x{Count}.",
+                                    dungeonId, activeCharacter.Id,
+                                    dungeon.RequiredItemId, dungeon.RequiredItemCount);
+                                continue;
+                            }
+
                             if (!dungeonCatalog.TryCreateLayout(
                                     dungeonId,
                                     out var dungeonLayout,
@@ -10276,12 +10291,12 @@ public sealed class EntranceService(
                             }
 
                             CharacterItemRecord? consumedHellTicket = null;
-                            GameServerPacket? pendingHellTicketUpdate = null;
+                            GameServerPacket? pendingEntryItemUpdate = null;
                             if (dungeonRun.HellMode)
                             {
-                                var plannedInventory = mainInventory.ToDictionary();
                                 if (selectionWorldMap is null
-                                    || !selectionWorldMap.TryConsumeHellItems(mainInventory, out plannedInventory))
+                                    || !selectionWorldMap.TryConsumeHellItems(
+                                        plannedEntryInventory, out var plannedHellInventory))
                                 {
                                     dungeonRun.Stop();
                                     var ticketError = GameProtocolEngine.CreateCommandError(
@@ -10298,21 +10313,30 @@ public sealed class EntranceService(
                                     continue;
                                 }
 
-                                var changedTickets = mainInventory.Values
-                                    .Where(item => !plannedInventory.TryGetValue(item.Slot, out var remaining)
+                                consumedHellTicket = plannedEntryInventory.Values
+                                    .Where(item => !plannedHellInventory.TryGetValue(item.Slot, out var remaining)
                                         || remaining.CountOrValue != item.CountOrValue)
-                                    .OrderBy(item => item.Slot).ToArray();
-                                consumedHellTicket = changedTickets.FirstOrDefault();
+                                    .OrderBy(item => item.Slot).FirstOrDefault();
+                                plannedEntryInventory = plannedHellInventory;
+                            }
 
-                                var savedTicketConsumption =
+                            var changedEntryItems = mainInventory.Values
+                                .Where(item => !plannedEntryInventory.TryGetValue(item.Slot, out var remaining)
+                                    || remaining.CountOrValue != item.CountOrValue)
+                                .OrderBy(item => item.Slot).ToArray();
+                            if (changedEntryItems.Length > 0)
+                            {
+                                // Commit normal admission and hell tickets together only after
+                                // a usable start room exists; failed entry leaves both untouched.
+                                var savedEntryConsumption =
                                     await store.SaveCharacterInventoryAsync(
                                         accountName,
                                         activeCharacter.Id,
                                         currentGold,
-                                        plannedInventory.Values,
+                                        plannedEntryInventory.Values,
                                         equippedInventory.Values,
                                         serverToken);
-                                if (savedTicketConsumption is null)
+                                if (savedEntryConsumption is null)
                                 {
                                     dungeonRun.Stop();
                                     var ticketSaveError = GameProtocolEngine.CreateCommandError(
@@ -10324,11 +10348,11 @@ public sealed class EntranceService(
                                     continue;
                                 }
 
-                                activeCharacter = savedTicketConsumption;
-                                mainInventory = plannedInventory;
-                                pendingHellTicketUpdate = GameProtocolEngine.CreateUpdateItemList(
+                                activeCharacter = savedEntryConsumption;
+                                mainInventory = plannedEntryInventory;
+                                pendingEntryItemUpdate = GameProtocolEngine.CreateUpdateItemList(
                                     0,
-                                    changedTickets.Select(item => plannedInventory.TryGetValue(item.Slot, out var remaining)
+                                    changedEntryItems.Select(item => plannedEntryInventory.TryGetValue(item.Slot, out var remaining)
                                         ? ToGameInventoryEntry(remaining)
                                         : new GameInventoryEntry(item.Slot, ushort.MaxValue, 0)).ToArray());
                             }
@@ -10391,11 +10415,11 @@ public sealed class EntranceService(
                             await dungeonInfo.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, dungeonInfo);
-                            if (pendingHellTicketUpdate is not null)
+                            if (pendingEntryItemUpdate is not null)
                             {
-                                await pendingHellTicketUpdate.WriteAsync(stream, serverToken);
+                                await pendingEntryItemUpdate.WriteAsync(stream, serverToken);
                                 Interlocked.Increment(ref runtimeSession.SentPackets);
-                                LogPacket("TX", runtimeSession, pendingHellTicketUpdate);
+                                LogPacket("TX", runtimeSession, pendingEntryItemUpdate);
                             }
 
                             var passiveObjectDrops = RegisterPassiveObjectDrops(

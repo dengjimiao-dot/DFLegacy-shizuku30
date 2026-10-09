@@ -612,6 +612,12 @@ public static class GameProtocolEngine
             StartGameCommand,
             [0, EnterDungeonSelectionInsufficientFatigueError, partyMemberIndex]);
 
+    // DF2008 0x410A3C reads error 17 and a party-slot byte, then formats
+    // string 2100 using the selected dungeon's required item and quantity.
+    public static GameServerPacket CreateSelectDungeonMissingRequiredItemReply(
+        byte partyMemberIndex = 0) =>
+        new(CommandPacketType, SelectDungeonCommand, [0, 17, partyMemberIndex]);
+
     public static GameServerPacket CreateDisjointItemReply(
         ushort sourceSlot,
         byte itemSpace,
