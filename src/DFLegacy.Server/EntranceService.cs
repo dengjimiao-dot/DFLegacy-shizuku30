@@ -1304,7 +1304,7 @@ public sealed class EntranceService(
                         // the generated instance in the same inventory/mail transaction.
                         overflowMails.AddRange(CreateOverflowMailRequests(
                             [rewardItem],
-                            "Dungeon clear reward"));
+                            SystemItemMailReason.DungeonClearReward));
 
                         granted[index] = true;
                     }
@@ -2953,7 +2953,7 @@ public sealed class EntranceService(
                                 .ToArray();
                             var loginOverflowMails = CreateOverflowMailRequests(
                                 loginOverflowItems,
-                                "Login inventory repair");
+                                SystemItemMailReason.InventoryRepair);
                             var migratedEquipmentSlots = displacedMainItems.Count != 0
                                 || displacedAvatarItems.Count != 0
                                 || savedInventory.Any(IsAvatarItem)
@@ -4528,7 +4528,7 @@ public sealed class EntranceService(
                                 serverToken,
                                 CreateOverflowMailRequests(
                                     questMailRewards,
-                                    "Quest reward"),
+                                    SystemItemMailReason.QuestReward),
                                 creatureInventory: nextCreatureInventory.Values,
                                 skills: nextSkills,
                                 growType: growthAdvanced ? nextGrowType : null,
@@ -7807,7 +7807,7 @@ public sealed class EntranceService(
                                     boosterPlan.OverflowItems.Where(item =>
                                         !CharacterWarehouseProgression
                                             .TryGetItemTargetCapacity(item.ItemId, out _)),
-                                    "Cera booster reward");
+                                    SystemItemMailReason.CeraBoosterReward);
                                 var savedCharacter = await store.SaveCharacterItemSpacesAsync(
                                     accountName,
                                     activeCharacter.Id,
@@ -8354,7 +8354,7 @@ public sealed class EntranceService(
                                     CharacterInventoryPlanner.CreateMailAttachments(
                                         purchasedItem,
                                         itemCatalog),
-                                    "Cera shop purchase"));
+                                    SystemItemMailReason.CeraShopPurchase));
                             }
 
                             if (purchaseValid && immediateContainerRewards.Count > 0)
@@ -8382,7 +8382,7 @@ public sealed class EntranceService(
                                     immediateContainerOverflow.Where(item =>
                                         !CharacterWarehouseProgression
                                             .TryGetItemTargetCapacity(item.ItemId, out _)),
-                                    "Cera shop container reward");
+                                    SystemItemMailReason.CeraShopContainerReward);
                                 immediateContainerMailCount = containerOverflowMails.Length;
                                 overflowMails.AddRange(containerOverflowMails);
                             }
@@ -8770,7 +8770,7 @@ public sealed class EntranceService(
                                     CharacterInventoryPlanner.CreateMailAttachments(
                                         purchasedItem,
                                         itemCatalog),
-                                    "Town shop purchase");
+                                    SystemItemMailReason.TownShopPurchase);
                             }
 
                             var nextGold = currentGold - totalPrice;
@@ -12465,11 +12465,8 @@ public sealed class EntranceService(
 
     private static CreateCharacterMailRequest[] CreateOverflowMailRequests(
         IEnumerable<CharacterMailAttachmentRecord> items,
-        string source) =>
-        items.Select(item => new CreateCharacterMailRequest(
-                "DFLegacy",
-                $"{source}: delivered because the inventory was full or overweight.",
-                Attachment: item))
+        SystemItemMailReason reason) =>
+        items.Select(item => SystemMailTemplates.CreateItemReturn(item, reason))
             .ToArray();
 
     private static IReadOnlyList<GameSkillEntry> GetInitialSkills(CharacterRecord character)
@@ -12775,7 +12772,7 @@ public sealed class EntranceService(
 
         return new GameMailEntry(
             mail.Id,
-            EncodeMailField(mail.Sender, 29, "DFLegacy"),
+            EncodeMailField(mail.Sender, 29, SystemMailTemplates.SenderName),
             EncodeMailField(mail.Text, 511, string.Empty),
             checked((uint)Math.Max(0, mail.Gold)),
             attachment,

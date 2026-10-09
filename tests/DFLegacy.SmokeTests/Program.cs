@@ -17,6 +17,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
 
 EquipmentReinforcementSmokeTests.Run(Check);
 await CharacterCreationSmokeTests.RunAsync(Check);
+await SystemMailSmokeTests.RunAsync(Check);
 await HiddenDungeonQuestSmokeTests.RunAsync(Check);
 QuestMapSmokeTests.Run(Check);
 DungeonCompletionSmokeTests.Run(Check);

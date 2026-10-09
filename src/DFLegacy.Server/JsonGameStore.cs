@@ -5139,10 +5139,8 @@ public sealed class JsonGameStore(
                         }
 
                         var migrationMailRequests = rewardPlan.MailedItems
-                            .Select(item => new CreateCharacterMailRequest(
-                                "DFLegacy",
-                                "Legacy quest reward: delivered because the inventory was full.",
-                                Attachment: item))
+                            .Select(item => SystemMailTemplates.CreateItemReturn(
+                                item, SystemItemMailReason.LegacyQuestReward))
                             .ToArray();
                         if (!TryAppendGeneratedMailsLocked(
                                 character,
