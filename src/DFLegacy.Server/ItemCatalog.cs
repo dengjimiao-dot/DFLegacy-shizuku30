@@ -44,7 +44,11 @@ public enum IncreaseStatusType : byte
     Spirit = 7,
     MovementSpeed = 8,
     AllElementResistance = 9,
-    SkillReset = 10
+    SkillReset = 10,
+    // Native coin vouchers use type 13. DF2008's type 11 is guild score
+    // (string 3034 at 0x00412F41), not coins. Type 13 takes its common
+    // consumption path without an effect message; NOTI14 updates the balance.
+    RevivalCoins = 13
 }
 
 public sealed record IncreaseStatusEffect(
@@ -521,6 +525,7 @@ public sealed class ItemCatalog
                 {
                     Type: not IncreaseStatusType.SkillPoints
                         and not IncreaseStatusType.Experience
+                        and not IncreaseStatusType.RevivalCoins
                 }),
             priceRates.NormalSellRatePerMille,
             priceRates.DungeonSellRatePerMille,
@@ -540,6 +545,7 @@ public sealed class ItemCatalog
                 {
                     Type: not IncreaseStatusType.SkillPoints
                         and not IncreaseStatusType.Experience
+                        and not IncreaseStatusType.RevivalCoins
                 }),
             priceRates);
     }
@@ -876,6 +882,17 @@ public sealed class ItemCatalog
     private static IncreaseStatusEffect? ReadIncreaseStatusEffect(string scriptPath) =>
         scriptPath.Replace('\\', '/') switch
         {
+            // These [waste] vouchers have no numeric PVF effect tag. Native
+            // increase_status assigns 7180/42 one coin and 7181 five coins.
+            var path when path.Equals(
+                "stackable/event/newyear/coin_newyear.stk",
+                StringComparison.OrdinalIgnoreCase) => new(IncreaseStatusType.RevivalCoins, 1),
+            var path when path.Equals(
+                "stackable/event/newyear/coin_book.stk",
+                StringComparison.OrdinalIgnoreCase) => new(IncreaseStatusType.RevivalCoins, 5),
+            var path when path.Equals(
+                "stackable/cash/coin_general.stk",
+                StringComparison.OrdinalIgnoreCase) => new(IncreaseStatusType.RevivalCoins, 1),
             var path when path.Equals(
                 "stackable/book_exp1.stk",
                 StringComparison.OrdinalIgnoreCase) => new(

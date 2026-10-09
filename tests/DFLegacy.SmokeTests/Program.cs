@@ -21,6 +21,7 @@ QuestMapSmokeTests.Run(Check);
 DungeonCompletionSmokeTests.Run(Check);
 DungeonBossEntranceSmokeTests.Run(Check);
 await DungeonRequiredItemSmokeTests.RunAsync(Check);
+await RevivalCoinVoucherSmokeTests.RunAsync(Check);
 QuestPvpRankSmokeTests.Run(Check);
 AvatarCompoundSmokeTests.Run(Check);
 CeraShopAvatarPurchaseSmokeTests.Run(Check);
@@ -7859,6 +7860,7 @@ if (!string.IsNullOrWhiteSpace(realPvfPath) && File.Exists(realPvfPath))
         && pvfCeraItemCatalog.TryGetDefinition(47_108, out var seaHeroAvatar)
         && seaHeroAvatar.Name == "紫罗兰色沙滩太阳镜",
         "real PVF item names are decoded from the client CP936 script encoding");
+    RevivalCoinVoucherSmokeTests.CheckCatalog(Check, pvfCeraItemCatalog);
     var expectedPvfIncreaseStatusEffects = new Dictionary<ushort, IncreaseStatusEffect>
     {
         [1_031] = new(IncreaseStatusType.SkillPoints, 5),

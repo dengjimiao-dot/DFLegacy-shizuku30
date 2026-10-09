@@ -5416,6 +5416,24 @@ public sealed class EntranceService(
                             await increaseStatusReply.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, increaseStatusReply);
+                            if (increaseStatus.Type == IncreaseStatusType.RevivalCoins)
+                            {
+                                // DF2008 consumes the voucher for native coin type 13 without
+                                // a dedicated effect message. NOTI14 updates the balance and
+                                // supplies its existing coin-gain notice; type 11 is guild score.
+                                var coins = mainInventory[CharacterInventoryLayout.RevivalCoinSlot];
+                                var coinUpdate = GameProtocolEngine.CreateUpdateItemList(0,
+                                    [ToGameInventoryEntry(coins)]);
+                                await coinUpdate.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, coinUpdate);
+                                logger.LogInformation(
+                                    "Used revival-coin voucher {ItemId} at slot {SourceSlot}; granted={GrantedCoins}, balance={CoinBalance}, stack remaining={RemainingCount}.",
+                                    sourceItem.ItemId, sourceSlot, increaseStatus.Amount,
+                                    coins.CountOrValue, useResult.RemainingItemCount);
+                                continue;
+                            }
+
                             logger.LogInformation(
                                 "Used permanent-status item {ItemId} at slot {SourceSlot}; type={StatusType}, persisted amount={Amount}, response amount={ResponseAmount}, remaining SP={RemainingSp}, cumulative bonuses=[SP:{BonusSp}, HP:{BonusHp}, MP:{BonusMp}, STR:{BonusStrength}, VIT:{BonusVitality}, INT:{BonusIntelligence}, SPI:{BonusSpirit}, MOVE:{BonusMovementSpeed}, ALLR:{BonusAllResistance}], stack remaining={RemainingCount}.",
                                 sourceItem.ItemId,
@@ -12437,6 +12455,7 @@ public sealed class EntranceService(
 
     private static int ToIncreaseStatusWireAmount(IncreaseStatusEffect effect) =>
         effect.Type is IncreaseStatusType.SkillPoints or IncreaseStatusType.Experience
+            or IncreaseStatusType.RevivalCoins
             ? effect.Amount
             : checked(effect.Amount * 10);
 

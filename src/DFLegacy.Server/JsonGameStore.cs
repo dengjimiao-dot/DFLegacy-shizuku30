@@ -100,7 +100,8 @@ public enum IncreaseStatusItemUseFailure
     None,
     InvalidRequest,
     CharacterNotFound,
-    ItemStateChanged
+    ItemStateChanged,
+    BalanceOverflow
 }
 
 public sealed record IncreaseStatusItemUseResult(
@@ -3301,6 +3302,14 @@ public sealed class JsonGameStore(
                 IncreaseStatusItemUseFailure.InvalidRequest);
         }
 
+        if (effect.Type == IncreaseStatusType.RevivalCoins
+            && (expectedItemId == CharacterInventoryLayout.RevivalCoinItemId
+                || !CharacterInventoryLayout.IsMainItemSlot(sourceSlot)))
+        {
+            return new IncreaseStatusItemUseResult(
+                false, null, 0, IncreaseStatusItemUseFailure.InvalidRequest);
+        }
+
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -3354,6 +3363,30 @@ public sealed class JsonGameStore(
                 {
                     CountOrValue = remainingItemCount
                 };
+            }
+
+            if (effect.Type == IncreaseStatusType.RevivalCoins)
+            {
+                var coins = inventory.Where(CharacterInventoryLayout.IsRevivalCoin)
+                    .Aggregate(0UL, (total, item) => total + item.CountOrValue);
+                if (coins > uint.MaxValue - (uint)effect.Amount)
+                {
+                    return new IncreaseStatusItemUseResult(false, character,
+                        remainingItemCount + 1, IncreaseStatusItemUseFailure.BalanceOverflow);
+                }
+
+                if (inventory.Any(item => item.Slot == CharacterInventoryLayout.RevivalCoinSlot
+                    && !CharacterInventoryLayout.IsRevivalCoin(item)))
+                {
+                    return new IncreaseStatusItemUseResult(false, character,
+                        remainingItemCount + 1, IncreaseStatusItemUseFailure.ItemStateChanged);
+                }
+
+                // Revival coins use a reserved balance slot, not a normal bag slot.
+                // Commit this credit and the voucher decrement together under the store gate.
+                inventory.RemoveAll(CharacterInventoryLayout.IsRevivalCoin);
+                inventory.Add(new CharacterItemRecord(CharacterInventoryLayout.RevivalCoinSlot,
+                    CharacterInventoryLayout.RevivalCoinItemId, checked((uint)coins + (uint)effect.Amount)));
             }
 
             var updated = ApplyIncreaseStatus(character, effect) with
@@ -4037,7 +4070,8 @@ public sealed class JsonGameStore(
         or IncreaseStatusType.Intelligence
         or IncreaseStatusType.Spirit
         or IncreaseStatusType.MovementSpeed
-        or IncreaseStatusType.AllElementResistance;
+        or IncreaseStatusType.AllElementResistance
+        or IncreaseStatusType.RevivalCoins;
 
     private static CharacterRecord ApplyIncreaseStatus(
         CharacterRecord character,
