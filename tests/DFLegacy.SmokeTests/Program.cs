@@ -16,6 +16,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
     new(scripts, NullLogger<ItemCatalog>.Instance);
 
 EquipmentReinforcementSmokeTests.Run(Check);
+await CharacterCreationSmokeTests.RunAsync(Check);
 await HiddenDungeonQuestSmokeTests.RunAsync(Check);
 QuestMapSmokeTests.Run(Check);
 DungeonCompletionSmokeTests.Run(Check);

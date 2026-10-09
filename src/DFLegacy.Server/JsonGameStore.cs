@@ -1578,24 +1578,27 @@ public sealed class JsonGameStore(
         _accounts.FirstOrDefault(account =>
             string.Equals(account.UserName, userName, StringComparison.OrdinalIgnoreCase));
 
-    private CharacterRecord? CreateCharacterLocked(
+    private async Task<CreateCharacterResult> CreateCharacterLockedAsync(
         AccountRecord account,
         CreateCharacterRequest request,
-        out string? error)
+        CancellationToken cancellationToken)
     {
-        error = null;
         if (account.Characters.Count >= MaximumTransferRoster.MaximumVisibleCharacters)
         {
-            error = "Character roster is full.";
-            return null;
+            return new(false, null, "Character roster is full.", CharacterCreationFailure.RosterFull);
         }
 
         var name = request.Name.Trim();
+        if (string.Equals(name, "游戏管理员", StringComparison.Ordinal)
+            || string.Equals(name, "GM", StringComparison.OrdinalIgnoreCase))
+        {
+            return new(false, null, "不允许使用该角色名。", CharacterCreationFailure.NameUnavailable);
+        }
+
         if (_accounts.SelectMany(candidate => candidate.Characters).Any(character =>
                 string.Equals(character.Name, name, StringComparison.OrdinalIgnoreCase)))
         {
-            error = "角色名已存在。";
-            return null;
+            return new(false, null, "角色名已存在。", CharacterCreationFailure.NameUnavailable);
         }
 
         var character = new CharacterRecord(
@@ -1614,7 +1617,39 @@ public sealed class JsonGameStore(
             DungeonProgress: [],
             TutorialStarted: false);
         account.Characters.Add(character);
-        return character;
+        try
+        {
+            await SaveLockedAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            account.Characters.Remove(character);
+            logger.LogError(exception,
+                "Failed to persist new character {CharacterNo}; removed the uncommitted roster entry.",
+                character.CharacterNo);
+            return new(false, null, "保存角色数据失败。", CharacterCreationFailure.PersistenceFailed);
+        }
+        catch
+        {
+            account.Characters.Remove(character);
+            throw;
+        }
+
+        return new(true, character);
+    }
+
+    private static CreateCharacterResult? ValidateCharacterCreation(CreateCharacterRequest request)
+    {
+        var name = request.Name?.Trim();
+        if (string.IsNullOrEmpty(name) || name.Length > 20)
+        {
+            return new(false, null, "角色名长度应为 1-20。", CharacterCreationFailure.InvalidName);
+        }
+
+        return request.Level is < 1 or > CharacterExperienceCatalog.MaximumLevel
+            ? new(false, null, $"等级应为 1-{CharacterExperienceCatalog.MaximumLevel}。",
+                CharacterCreationFailure.InvalidRequest)
+            : null;
     }
 
     private static void ReindexCharacterSlotsLocked(AccountRecord account)
@@ -1683,19 +1718,14 @@ public sealed class JsonGameStore(
         }
     }
 
-    public async Task<(bool Created, CharacterRecord? Character, string? Error)> CreateCharacterAsync(
+    public async Task<CreateCharacterResult> CreateCharacterAsync(
         string userName,
         CreateCharacterRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(request.Name)
-            || request.Name.Length > 20
-            || request.Level is < 1 or > CharacterExperienceCatalog.MaximumLevel)
+        if (ValidateCharacterCreation(request) is { } invalid)
         {
-            return (
-                false,
-                null,
-                $"角色名长度应为 1-20，等级应为 1-{CharacterExperienceCatalog.MaximumLevel}。");
+            return invalid;
         }
 
         await _gate.WaitAsync(cancellationToken);
@@ -1704,17 +1734,10 @@ public sealed class JsonGameStore(
             var account = FindAccountLocked(userName);
             if (account is null)
             {
-                return (false, null, "账号不存在。");
+                return new(false, null, "账号不存在。", CharacterCreationFailure.AccountNotFound);
             }
 
-            var character = CreateCharacterLocked(account, request, out var error);
-            if (character is null)
-            {
-                return (false, null, error);
-            }
-
-            await SaveLockedAsync(cancellationToken);
-            return (true, character, null);
+            return await CreateCharacterLockedAsync(account, request, cancellationToken);
         }
         finally
         {
@@ -1722,19 +1745,14 @@ public sealed class JsonGameStore(
         }
     }
 
-    public async Task<(bool Created, CharacterRecord? Character, string? Error)> CreateCharacterAsync(
+    public async Task<CreateCharacterResult> CreateCharacterAsync(
         uint accountUid,
         CreateCharacterRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(request.Name)
-            || request.Name.Length > 20
-            || request.Level is < 1 or > CharacterExperienceCatalog.MaximumLevel)
+        if (ValidateCharacterCreation(request) is { } invalid)
         {
-            return (
-                false,
-                null,
-                $"角色名长度应为 1-20，等级应为 1-{CharacterExperienceCatalog.MaximumLevel}。");
+            return invalid;
         }
 
         await _gate.WaitAsync(cancellationToken);
@@ -1744,17 +1762,10 @@ public sealed class JsonGameStore(
                 candidate.AccountUid == accountUid);
             if (account is null)
             {
-                return (false, null, "账号不存在。");
+                return new(false, null, "账号不存在。", CharacterCreationFailure.AccountNotFound);
             }
 
-            var character = CreateCharacterLocked(account, request, out var error);
-            if (character is null)
-            {
-                return (false, null, error);
-            }
-
-            await SaveLockedAsync(cancellationToken);
-            return (true, character, null);
+            return await CreateCharacterLockedAsync(account, request, cancellationToken);
         }
         finally
         {

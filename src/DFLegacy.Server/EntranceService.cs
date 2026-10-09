@@ -12273,29 +12273,33 @@ public sealed class EntranceService(
                         if (request.Type == GameProtocolEngine.CommandPacketType
                             && request.ProtocolId == GameProtocolEngine.CreateCharacterCommand)
                         {
-                            var created = false;
+                            var create = new CreateCharacterResult(false, null,
+                                Failure: CharacterCreationFailure.InvalidRequest);
                             if (TryReadCreateCharacter(request.Body, out var job, out var nameBytes))
                             {
-                                var create = await store.CreateCharacterAsync(
+                                create = await store.CreateCharacterAsync(
                                     accountUid,
                                     new CreateCharacterRequest(ClientEncoding.GetString(nameBytes), job, 0, 1),
                                     serverToken);
-                                created = create.Created;
                             }
 
-                            var createReply = created
-                                ? GameProtocolEngine.CreateCommandReply(request, success: true)
-                                : GameProtocolEngine.CreateCommandError(request, errorCode: 2);
+                            var createReply = CharacterCreationReply.Create(request, create);
                             await createReply.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, createReply);
 
-                            if (created)
+                            if (create.Created)
                             {
                                 var userInfo = await CreateUserInfoAsync(accountUid, serverToken);
                                 await userInfo.WriteAsync(stream, serverToken);
                                 Interlocked.Increment(ref runtimeSession.SentPackets);
                                 LogPacket("TX", runtimeSession, userInfo);
+                            }
+                            else
+                            {
+                                logger.LogInformation(
+                                    "Rejected character creation for account {AccountUid}: failure={Failure}, reason={Reason}.",
+                                    accountUid, create.Failure, create.Error);
                             }
 
                             continue;
