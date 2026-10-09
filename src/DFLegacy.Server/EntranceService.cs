@@ -8952,111 +8952,21 @@ public sealed class EntranceService(
                                 continue;
                             }
 
-                            var plannedMain = mainInventory.ToDictionary(
-                                pair => pair.Key,
-                                pair => pair.Value);
-                            var plannedEquipment = equippedInventory.ToDictionary(
-                                pair => pair.Key,
-                                pair => pair.Value);
-                            var repairTargets = new List<(
-                                Dictionary<ushort, CharacterItemRecord> Space,
-                                CharacterItemRecord Item,
-                                ushort MaximumDurability,
-                                int Price)>();
                             var inDungeonRepair = currentDungeonId != 0;
-
-                            void AddRepairTarget(
-                                Dictionary<ushort, CharacterItemRecord> space,
-                                CharacterItemRecord item)
+                            if (!EquipmentRepairPlanner.TryCreate(mainInventory, equippedInventory,
+                                    currentGold, itemSpace, repairSlot, inDungeonRepair, itemCatalog,
+                                    out var repairPlan, out var repairFailure))
                             {
-                                if (!itemCatalog.TryGetMaximumDurability(
-                                        item.ItemId,
-                                        out var maximumDurability)
-                                    || item.Durability >= maximumDurability
-                                    || !itemCatalog.TryCalculateRepairPrice(
-                                        item.ItemId,
-                                        item.Durability,
-                                        inDungeonRepair,
-                                        out var repairPrice))
-                                {
-                                    return;
-                                }
-
-                                repairTargets.Add((
-                                    space,
-                                    item,
-                                    maximumDurability,
-                                    repairPrice));
-                            }
-
-                            if (repairSlot == ushort.MaxValue)
-                            {
-                                foreach (var item in plannedEquipment.Values)
-                                {
-                                    AddRepairTarget(plannedEquipment, item);
-                                }
-
-                                foreach (var item in plannedMain.Values)
-                                {
-                                    AddRepairTarget(plannedMain, item);
-                                }
-                            }
-                            else
-                            {
-                                var selectedSpace = itemSpace == 0
-                                    ? plannedMain
-                                    : plannedEquipment;
-                                if (!selectedSpace.TryGetValue(
-                                        repairSlot,
-                                        out var selectedItem)
-                                    || !itemCatalog.TryGetMaximumDurability(
-                                        selectedItem.ItemId,
-                                        out var maximumDurability)
-                                    || selectedItem.Durability >= maximumDurability
-                                    || !itemCatalog.TryCalculateRepairPrice(
-                                        selectedItem.ItemId,
-                                        selectedItem.Durability,
-                                        inDungeonRepair,
-                                        out var repairPrice))
-                                {
-                                    var error = GameProtocolEngine.CreateCommandError(
-                                        request,
-                                        0x11);
-                                    await error.WriteAsync(stream, serverToken);
-                                    Interlocked.Increment(ref runtimeSession.SentPackets);
-                                    LogPacket("TX", runtimeSession, error);
-                                    continue;
-                                }
-
-                                repairTargets.Add((
-                                    selectedSpace,
-                                    selectedItem,
-                                    maximumDurability,
-                                    repairPrice));
-                            }
-
-                            var totalRepairPrice = repairTargets.Sum(
-                                target => (long)target.Price);
-                            if (totalRepairPrice > currentGold)
-                            {
-                                var error = GameProtocolEngine.CreateCommandError(
-                                    request,
-                                    10);
+                                var error = GameProtocolEngine.CreateCommandError(request, (byte)repairFailure);
                                 await error.WriteAsync(stream, serverToken);
                                 Interlocked.Increment(ref runtimeSession.SentPackets);
                                 LogPacket("TX", runtimeSession, error);
                                 continue;
                             }
 
-                            foreach (var target in repairTargets)
-                            {
-                                target.Space[target.Item.Slot] = target.Item with
-                                {
-                                    Durability = target.MaximumDurability
-                                };
-                            }
-
-                            var nextGold = checked(currentGold - (int)totalRepairPrice);
+                            var plannedMain = repairPlan.MainInventory;
+                            var plannedEquipment = repairPlan.Equipment;
+                            var nextGold = repairPlan.RemainingGold;
                             var savedRepair = await store.SaveCharacterItemSpacesAsync(
                                 accountName,
                                 activeCharacter.Id,
@@ -9090,12 +9000,21 @@ public sealed class EntranceService(
                             await repairReply.WriteAsync(stream, serverToken);
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, repairReply);
+                            foreach (var group in repairPlan.SynchronizationItems.GroupBy(item => item.ItemSpace))
+                            {
+                                var durabilityUpdate = GameProtocolEngine.CreateUpdateItemList(group.Key,
+                                    group.Select(item => ToGameInventoryEntry(item.Item)).ToArray());
+                                await durabilityUpdate.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, durabilityUpdate);
+                            }
+
                             logger.LogInformation(
                                 "Repaired {RepairCount} equipment item(s) at {ItemSpace}:{Slot}; cost={Cost}, gold={Gold}, dungeonRate={DungeonRate}",
-                                repairTargets.Count,
+                                repairPlan.RepairedItems.Count,
                                 itemSpace,
                                 repairSlot,
-                                totalRepairPrice,
+                                repairPlan.Price,
                                 currentGold,
                                 inDungeonRepair);
                             continue;
