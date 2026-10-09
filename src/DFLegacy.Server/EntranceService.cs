@@ -11269,10 +11269,27 @@ public sealed class EntranceService(
                         if (request.Type == GameProtocolEngine.CommandPacketType
                             && request.ProtocolId == GameProtocolEngine.GetItemCommand)
                         {
+                            async Task RejectPickupAsync(bool inventoryFull = false)
+                            {
+                                if (request.Body.Length < sizeof(ushort))
+                                {
+                                    return;
+                                }
+
+                                // DF2008 blocks CMD18/CMD47 while a pickup remains pending.
+                                // Every failed pickup must release that operation, even if the
+                                // server keeps the ground item and does not grant anything.
+                                var error = GameProtocolEngine.CreateGetItemRejection(request, inventoryFull);
+                                await error.WriteAsync(stream, serverToken);
+                                Interlocked.Increment(ref runtimeSession.SentPackets);
+                                LogPacket("TX", runtimeSession, error);
+                            }
+
                             if (request.Body.Length < 4
                                 || currentDungeonId == 0
                                 || activeCharacter is null)
                             {
+                                await RejectPickupAsync();
                                 continue;
                             }
 
@@ -11285,6 +11302,7 @@ public sealed class EntranceService(
                                     out var groundItem)
                                 || groundItem.OwnerUserId != localUserId)
                             {
+                                await RejectPickupAsync();
                                 logger.LogWarning(
                                     "Ignored invalid or duplicate pickup of ground item {GroundId} for user {UserId}.",
                                     groundId,
@@ -11302,6 +11320,7 @@ public sealed class EntranceService(
                                 }
                                 catch (OverflowException)
                                 {
+                                    await RejectPickupAsync();
                                     logger.LogWarning(
                                         "Gold pickup {GroundId} would overflow the character balance.",
                                         groundId);
@@ -11317,6 +11336,7 @@ public sealed class EntranceService(
                                     serverToken);
                                 if (saved is null)
                                 {
+                                    await RejectPickupAsync();
                                     logger.LogWarning(
                                         "Gold pickup {GroundId} was not persisted; the ground item was retained.",
                                         groundId);
@@ -11362,6 +11382,7 @@ public sealed class EntranceService(
                                     expectedWarehouseCapacity: warehouseCapacity);
                                 if (savedUpgrade is null)
                                 {
+                                    await RejectPickupAsync();
                                     logger.LogWarning(
                                         "Warehouse-upgrade pickup {GroundId} was not persisted; the ground item was retained.",
                                         groundId);
@@ -11407,11 +11428,7 @@ public sealed class EntranceService(
                                 // CMD 46 error 0x15 rolls that state back and drops it visually.
                                 // NOTI 39 would falsely confirm pickup, while NOTI 40 would create
                                 // a second ground object instead of releasing the existing one.
-                                var overweightReply =
-                                    GameProtocolEngine.CreateGetItemSilentRejection(request);
-                                await overweightReply.WriteAsync(stream, serverToken);
-                                Interlocked.Increment(ref runtimeSession.SentPackets);
-                                LogPacket("TX", runtimeSession, overweightReply);
+                                await RejectPickupAsync();
 
                                 var combinedWeight = carriedWeight > ulong.MaxValue - pickupWeight
                                     ? ulong.MaxValue
@@ -11467,6 +11484,7 @@ public sealed class EntranceService(
                                         out var creaturePickupPlan,
                                         out var creaturePickupFailure))
                                 {
+                                    await RejectPickupAsync(creaturePickupFailure == InventoryPlacementFailure.Full);
                                     logger.LogInformation(
                                         "Ground Creature item {GroundId} cannot enter Creature inventory ({Failure}); it remains in the room.",
                                         groundId,
@@ -11488,6 +11506,7 @@ public sealed class EntranceService(
                                             creaturePickupPlan.Inventory.Values);
                                 if (savedCreaturePickup is null)
                                 {
+                                    await RejectPickupAsync();
                                     logger.LogWarning(
                                         "Creature item pickup {GroundId} was not persisted; the ground item was retained.",
                                         groundId);
@@ -11544,6 +11563,7 @@ public sealed class EntranceService(
                                         out var avatarPickupPlan,
                                         out var avatarPickupFailure))
                                 {
+                                    await RejectPickupAsync(avatarPickupFailure == InventoryPlacementFailure.Full);
                                     logger.LogInformation(
                                         "Ground Avatar item {GroundId} cannot enter Avatar inventory ({Failure}); it remains in the room.",
                                         groundId,
@@ -11563,6 +11583,7 @@ public sealed class EntranceService(
                                         avatarInventory: avatarPickupPlan.Inventory.Values);
                                 if (savedAvatarPickup is null)
                                 {
+                                    await RejectPickupAsync();
                                     logger.LogWarning(
                                         "Avatar item pickup {GroundId} was not persisted; the ground item was retained.",
                                         groundId);
@@ -11597,6 +11618,7 @@ public sealed class EntranceService(
                                     out var pickupPlan,
                                     out var pickupFailure))
                             {
+                                await RejectPickupAsync(pickupFailure == InventoryPlacementFailure.Full);
                                 logger.LogInformation(
                                     "Ground item {GroundId} cannot enter the inventory ({Failure}); it remains in the room.",
                                     groundId,
@@ -11613,6 +11635,7 @@ public sealed class EntranceService(
                                 serverToken);
                             if (savedInventory is null)
                             {
+                                await RejectPickupAsync();
                                 logger.LogWarning(
                                     "Item pickup {GroundId} was not persisted; the ground item was retained.",
                                     groundId);

@@ -6130,6 +6130,7 @@ Check(!DungeonPickupPlanner.TryPlanItem(
     && fullInventory.OrderBy(pair => pair.Key)
         .SequenceEqual(fullInventorySnapshot.OrderBy(pair => pair.Key)),
     "full material and quick-slot regions reject pickup without mutating inventory");
+await FullBagConsumptionSmokeTests.RunAsync(Check, smokeItemCatalog!);
 var fullMaterialCategory = Enumerable.Range(73, 32)
     .ToDictionary(
         slot => (ushort)slot,

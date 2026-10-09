@@ -401,6 +401,9 @@ public static class GameProtocolEngine
     // silent but enters the common rollback at 0x00414198, which clears the
     // pending pickup flag at item-object + 0x7A5 so the same item falls back.
     public const byte GetItemSilentRejectionError = 0x15;
+    // Error 4 formats string 793 at 0x00414170, then shares the rollback:
+    // pop the inventory operation and release the optimistic ground pickup.
+    public const byte GetItemInventoryFullError = 0x04;
     public const uint DefaultCompletedTutorialFlags = uint.MaxValue;
     public const byte BlackDiamondServiceType = 16;
     public const byte OverlordContractServiceType = 22;
@@ -593,16 +596,22 @@ public static class GameProtocolEngine
             [0, errorCode]);
     }
 
-    public static GameServerPacket CreateGetItemSilentRejection(PacketFrame request)
+    public static GameServerPacket CreateGetItemSilentRejection(PacketFrame request) =>
+        CreateGetItemRejection(request);
+
+    public static GameServerPacket CreateGetItemRejection(
+        PacketFrame request,
+        bool inventoryFull = false)
     {
         if (request.ProtocolId != GetItemCommand)
         {
             throw new ArgumentException(
-                "A silent item-pickup rejection requires a GET_ITEM request.",
+                "An item-pickup rejection requires a GET_ITEM request.",
                 nameof(request));
         }
 
-        return CreateCommandError(request, GetItemSilentRejectionError);
+        return CreateCommandError(request,
+            inventoryFull ? GetItemInventoryFullError : GetItemSilentRejectionError);
     }
 
     public static GameServerPacket CreateEnterDungeonSelectionInsufficientFatigueReply(
