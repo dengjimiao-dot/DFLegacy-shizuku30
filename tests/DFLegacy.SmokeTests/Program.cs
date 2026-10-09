@@ -18,6 +18,7 @@ static ItemCatalog CreateItems(ScriptFileSystem scripts) =>
 EquipmentReinforcementSmokeTests.Run(Check);
 await CharacterCreationSmokeTests.RunAsync(Check);
 await SystemMailSmokeTests.RunAsync(Check);
+await PlayerMailPostageSmokeTests.RunAsync(Check);
 await HiddenDungeonQuestSmokeTests.RunAsync(Check);
 QuestMapSmokeTests.Run(Check);
 DungeonCompletionSmokeTests.Run(Check);
@@ -4644,7 +4645,7 @@ try
     mailSender = await mailStore.SaveCharacterInventoryAsync(
         "test",
         mailSender.Id,
-        1_000,
+        2_000,
         senderInventory,
         mailSender.Equipment ?? []) ?? mailSender;
     var plannedSenderInventory = new[] { new CharacterItemRecord(20, 3037, 7) };
@@ -4657,16 +4658,16 @@ try
             "player delivery",
             Gold: 250,
             Attachment: new CharacterMailAttachmentRecord(3037, 3)),
-        senderGold: 750,
+        senderGold: 738,
         plannedSenderInventory,
         mailSender.Equipment ?? [],
         CancellationToken.None);
     var playerMails = await mailStore.GetCharacterMailsAsync(mailRecipient.Id);
     Check(playerMail.Sent
-        && playerMail.Sender is { Gold: 750 }
+        && playerMail.Sender is { Gold: 738 }
         && playerMail.Sender.Inventory?.Single() is { Slot: 20, CountOrValue: 7 }
         && playerMails.Single().Attachment is { ItemId: 3037, CountOrValue: 3 },
-        "player mail atomically debits sender gold and stack quantity before delivery");
+        "player mail atomically debits attachment gold, native postage and stack quantity before delivery");
     var stalePlayerMail = await mailStore.SendCharacterMailFromCharacterAsync(
         "test",
         mailSender.Id,
@@ -4685,7 +4686,7 @@ try
     Check(!stalePlayerMail.Sent
         && stalePlayerMail.Failure == CharacterMailSendFailure.SenderStateChanged
         && (await reloadedMailStore.GetCharacterMailsAsync(mailRecipient.Id)).Length == 1
-        && reloadedMailSender.Gold == 750,
+        && reloadedMailSender.Gold == 738,
         "stale player-mail transactions cannot duplicate gold or attachments");
 
     var warehouseItem = new CharacterItemRecord(

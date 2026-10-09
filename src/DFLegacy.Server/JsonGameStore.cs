@@ -85,7 +85,8 @@ public enum CharacterMailSendFailure
     SenderNotFound,
     RecipientNotFound,
     RecipientMailboxFull,
-    SenderStateChanged
+    SenderStateChanged,
+    InsufficientGold
 }
 
 public sealed record CharacterMailSendResult(
@@ -2475,8 +2476,15 @@ public sealed class JsonGameStore(
             }
 
             var sender = senderOwner.Characters[senderIndex];
-            if (request.Gold > sender.Gold
-                || senderGold != sender.Gold - request.Gold)
+            if (!CharacterMailPostage.TryDebit(sender.Gold, request.Gold,
+                    request.Attachment is not null, out var requiredSenderGold))
+            {
+                return new CharacterMailSendResult(false, sender,
+                    recipientOwner.Characters[recipientIndex].Id, null,
+                    CharacterMailSendFailure.InsufficientGold);
+            }
+
+            if (senderGold != requiredSenderGold)
             {
                 return new CharacterMailSendResult(
                     false,
@@ -2535,12 +2543,14 @@ public sealed class JsonGameStore(
 
             await SaveLockedAsync(cancellationToken);
             logger.LogInformation(
-                "Character {SenderCharacterId} sent mail {MailId} to {RecipientCharacterId}: gold={Gold}, item={ItemId}.",
+                "Character {SenderCharacterId} sent mail {MailId} to {RecipientCharacterId}: gold={Gold}, item={ItemId}, postage={Postage}, balance={Balance}.",
                 senderCharacterId,
                 mail.Id,
                 recipientUpdated.Id,
                 mail.Gold,
-                mail.Attachment?.ItemId ?? 0);
+                mail.Attachment?.ItemId ?? 0,
+                CharacterMailPostage.Calculate(request.Gold, request.Attachment is not null),
+                senderGold);
             return new CharacterMailSendResult(
                 true,
                 senderUpdated,

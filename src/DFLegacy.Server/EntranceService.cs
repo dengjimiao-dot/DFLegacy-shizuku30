@@ -3706,11 +3706,12 @@ public sealed class EntranceService(
                                 continue;
                             }
 
-                            if (sendRequest.Gold > currentGold)
+                            if (!CharacterMailPostage.TryDebit(currentGold, sendRequest.Gold,
+                                    sendRequest.ItemId != 0, out var plannedGold))
                             {
                                 var error = GameProtocolEngine.CreateCommandError(
                                     request,
-                                    errorCode: 17);
+                                    errorCode: 10);
                                 await error.WriteAsync(stream, serverToken);
                                 Interlocked.Increment(ref runtimeSession.SentPackets);
                                 LogPacket("TX", runtimeSession, error);
@@ -3810,7 +3811,6 @@ public sealed class EntranceService(
                                 continue;
                             }
 
-                            var plannedGold = currentGold - sendRequest.Gold;
                             var sendResult = await store.SendCharacterMailFromCharacterAsync(
                                 accountName,
                                 activeCharacter.Id,
@@ -3829,6 +3829,7 @@ public sealed class EntranceService(
                                 var errorCode = sendResult.Failure switch
                                 {
                                     CharacterMailSendFailure.RecipientMailboxFull => (byte)90,
+                                    CharacterMailSendFailure.InsufficientGold => (byte)10,
                                     CharacterMailSendFailure.SenderStateChanged => (byte)17,
                                     CharacterMailSendFailure.RecipientNotFound => (byte)10,
                                     _ => (byte)7
@@ -3852,14 +3853,16 @@ public sealed class EntranceService(
                             Interlocked.Increment(ref runtimeSession.SentPackets);
                             LogPacket("TX", runtimeSession, sendReply);
 
-                            var senderUpdates = new List<GameInventoryEntry>();
-                            if (sendRequest.Gold != 0)
+                            // CMD97 success applies the client's own gold + postage debit.
+                            // Sync the same absolute balance afterward, including fee-only
+                            // letters, so this update cannot refund the postage as a gain.
+                            var senderUpdates = new List<GameInventoryEntry>
                             {
-                                senderUpdates.Add(new GameInventoryEntry(
+                                new(
                                     Slot: 0,
                                     ItemId: 0,
-                                    CountOrValue: checked((uint)currentGold)));
-                            }
+                                    CountOrValue: checked((uint)currentGold))
+                            };
 
                             if (sourceSlot.HasValue)
                             {
